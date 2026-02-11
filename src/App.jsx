@@ -136,6 +136,7 @@ const GlassCard = ({ children, className = "" }) => (
 export default function App() {
   // --- Global State ---
   const [currentUser, setCurrentUser] = useState(null); 
+  const [authUser, setAuthUser] = useState(null); // 新增：追蹤 Firebase Auth 狀態
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [webhooks, setWebhooks] = useState({ logUrl: '', notifyUrl: '' });
@@ -221,6 +222,7 @@ export default function App() {
     
     if (auth) {
       const unsub = onAuthStateChanged(auth, (user) => {
+        setAuthUser(user); // 修正點：將 Firebase User 存入 State，觸發重新渲染
         if (!user) {
             setLoading(false); 
         } else {
@@ -231,9 +233,10 @@ export default function App() {
     }
   }, []);
 
-  // Fetch Data
+  // Fetch Data (修正依賴為 authUser)
   useEffect(() => {
-    if (auth && auth.currentUser) {
+    // 改用 authUser 狀態來判斷是否讀取資料
+    if (auth && authUser) {
       const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'settings'), (docSnap) => {
         if (docSnap.exists()) {
           setWebhooks(docSnap.data());
@@ -267,11 +270,10 @@ export default function App() {
       setLoading(false);
       return () => { unsubSettings(); unsubUsers(); unsubParties(); unsubLogs(); };
     }
-  }, [auth?.currentUser]);
+  }, [authUser]); // 依賴改成 authUser
 
-  // NEW: 自動登入偵測
+  // 自動登入偵測
   useEffect(() => {
-    // 只有在「未登入」且「使用者列表已載入」時才執行
     if (!currentUser && users.length > 0) {
       const storedUserId = localStorage.getItem('sanctuary_user_id');
       if (storedUserId) {

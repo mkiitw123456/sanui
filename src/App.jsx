@@ -30,22 +30,25 @@ const CLASSES = [
   { id: 'chanter', name: '護法星', icon: 'chanter.webp', color: 'text-indigo-400' },
 ];
 
-// --- 修改後的 Vercel/本地端程式碼 ---
+// --- Vercel / 本地端 直接寫死 API Key 設定 ---
+// 請將下方的字串替換成您 Firebase Console > Project Settings > SDK Config 中的內容
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID
+  apiKey: "AIzaSyCYgTY7d4jvq-q2yj-jtlRfHRysOc-4Fc4",
+  authDomain: "sanui-8cdf1.firebaseapp.com",
+  projectId: "sanui-8cdf1",
+  storageBucket: "sanui-8cdf1.firebasestorage.app",
+  messagingSenderId: "444368977868",
+  appId: "1:444368977868:web:fb70a03a256f012c9ae769",
+  measurementId: "G-M988BQMECB"
 };
 
-const appId = 'sanui'; // 您可以自訂一個 ID
+const appId = 'sanctuary-production'; // 固定 ID，確保資料路徑一致
 
-// 初始化邏輯也要稍微改一下，確保 config 存在才初始化
 let auth, db;
-// 檢查是否有讀取到 API Key，如果沒有則不初始化
-if (firebaseConfig.apiKey) {
+
+// 初始化邏輯
+// 檢查 apiKey 是否已經填寫 (不包含預設的提示文字)
+if (firebaseConfig.apiKey && !firebaseConfig.apiKey.includes("請在此填入")) {
   try {
     const app = initializeApp(firebaseConfig);
     auth = getAuth(app);
@@ -54,7 +57,7 @@ if (firebaseConfig.apiKey) {
     console.error("Firebase 初始化失敗:", error);
   }
 } else {
-  console.error("錯誤：找不到 Firebase API Key，請檢查 .env 檔案或 Vercel 環境變數設定。");
+  console.error("錯誤：請在 src/App.jsx 中填入正確的 Firebase Config 資料！");
 }
 
 /**

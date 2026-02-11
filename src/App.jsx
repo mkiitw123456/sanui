@@ -40,14 +40,21 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-const appId = 'sanctuary-production'; // 您可以自訂一個 ID
+const appId = 'sanui'; // 您可以自訂一個 ID
 
 // 初始化邏輯也要稍微改一下，確保 config 存在才初始化
 let auth, db;
+// 檢查是否有讀取到 API Key，如果沒有則不初始化
 if (firebaseConfig.apiKey) {
-  const app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
-  db = getFirestore(app);
+  try {
+    const app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  } catch (error) {
+    console.error("Firebase 初始化失敗:", error);
+  }
+} else {
+  console.error("錯誤：找不到 Firebase API Key，請檢查 .env 檔案或 Vercel 環境變數設定。");
 }
 
 /**

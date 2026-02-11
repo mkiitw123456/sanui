@@ -3,7 +3,7 @@ import {
   Users, Sword, Shield, Plus, Trash2, LogOut, 
   Settings, User, Calendar, CheckCircle, XCircle, 
   X, Crown, Activity, History, KeyRound, Edit2, Save,
-  MessageSquare, Globe
+  MessageSquare, Globe, AlertTriangle
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -42,12 +42,11 @@ const firebaseConfig = {
   measurementId: "G-M988BQMECB"
 };
 
-const appId = 'sanctuary-production'; // 固定 ID，確保資料路徑一致
+const appId = 'sanui'; // 固定 ID，確保資料路徑一致
 
 let auth, db;
 
 // 初始化邏輯
-// 檢查 apiKey 是否已經填寫 (不包含預設的提示文字)
 if (firebaseConfig.apiKey && !firebaseConfig.apiKey.includes("請在此填入")) {
   try {
     const app = initializeApp(firebaseConfig);
@@ -83,7 +82,7 @@ const GlobalStyles = () => (
 
 const Toast = ({ message, type, onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 3000);
+    const timer = setTimeout(onClose, 5000); // 延長顯示時間以便閱讀錯誤
     return () => clearTimeout(timer);
   }, [onClose]);
 
@@ -167,7 +166,6 @@ export default function App() {
     return date.toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
-  // Helper to safely get character info (handles old string format vs new object format)
   const getCharInfo = (charData) => {
     if (typeof charData === 'string') {
       return { name: charData, job: 'unknown', icon: null };
@@ -178,7 +176,6 @@ export default function App() {
 
   // --- Discord Logic ---
   const sendDiscord = async (type, content) => {
-    // type: 'log' or 'notify'
     const url = type === 'notify' ? webhooks.notifyUrl : webhooks.logUrl;
     if (!url || !url.startsWith('http')) return;
 
@@ -189,14 +186,11 @@ export default function App() {
         body: JSON.stringify({ 
           content: content,
           username: "聖域系統 (Sanctuary)",
-          avatar_url: "https://cdn-icons-png.flaticon.com/512/3578/3578768.png" // Generic sword icon
+          avatar_url: "https://cdn-icons-png.flaticon.com/512/3578/3578768.png" 
         }),
       });
     } catch (e) {
-      console.error("Discord Webhook Error (Expected in browser due to CORS if no proxy):", e);
-      // Note: Browsers block direct Discord webhook calls due to CORS usually. 
-      // If this fails silently, it's a known browser limitation without a backend proxy.
-      // However, we implement it as requested.
+      console.error("Discord Webhook Error:", e);
     }
   };
 
@@ -208,10 +202,16 @@ export default function App() {
   useEffect(() => {
     const initAuth = async () => {
       if (auth) {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
+        try {
+          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } else {
+            // 重要：嘗試匿名登入
+            await signInAnonymously(auth);
+          }
+        } catch (error) {
+          console.error("Auth Error:", error);
+          showToast(`登入服務初始化失敗: ${error.message}`, "error");
         }
       } else {
         setLoading(false);
@@ -221,7 +221,11 @@ export default function App() {
     
     if (auth) {
       const unsub = onAuthStateChanged(auth, (user) => {
-        if (!user) setLoading(false); 
+        if (!user) {
+            setLoading(false); 
+        } else {
+            console.log("Firebase Auth Connected:", user.uid);
+        }
       });
       return () => unsub();
     }
@@ -230,29 +234,36 @@ export default function App() {
   // Fetch Data
   useEffect(() => {
     if (auth && auth.currentUser) {
-      // 1. Settings (Webhooks)
       const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'settings'), (docSnap) => {
         if (docSnap.exists()) {
           setWebhooks(docSnap.data());
         }
+      }, (err) => {
+          console.error("Setting fetch error:", err);
+          // Don't show toast for settings as it might not exist yet
       });
 
-      // 2. Users
       const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      }, (err) => console.error("Users fetch error", err));
+      }, (err) => {
+          console.error("Users fetch error:", err);
+          showToast(`無法讀取使用者資料: ${err.message}`, "error");
+      });
 
-      // 3. Parties
       const unsubParties = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), (snap) => {
         const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         list.sort((a, b) => b.createdAt - a.createdAt);
         setParties(list);
-      }, (err) => console.error("Parties fetch error", err));
+      }, (err) => {
+          console.error("Parties fetch error:", err);
+          showToast(`無法讀取組隊資料: ${err.message}`, "error");
+      });
 
-      // 4. Logs
       const unsubLogs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), (snap) => {
         setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      }, (err) => console.error("Logs fetch error", err));
+      }, (err) => {
+           console.error("Logs fetch error:", err);
+      });
 
       setLoading(false);
       return () => { unsubSettings(); unsubUsers(); unsubParties(); unsubLogs(); };
@@ -265,6 +276,9 @@ export default function App() {
   const handleLogin = async () => {
     const { name, pin } = loginForm;
     if (!name || pin.length !== 4) return showToast("請輸入名稱與4位數密碼", "error");
+
+    // 確認 Firebase 連線狀態
+    if (!db) return showToast("資料庫未連線，請檢查 API Key", "error");
 
     const existingUser = users.find(u => u.name === name);
 
@@ -288,19 +302,16 @@ export default function App() {
         createdAt: Date.now()
       };
 
-      if (db) {
-        try {
-          const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'users'), newUser);
-          setCurrentUser({ ...newUser, id: docRef.id });
-          logAction(`新使用者註冊: ${name}`);
-        } catch (e) {
-          console.error("Error adding user: ", e);
-          return showToast("註冊失敗，請重試", "error");
-        }
+      try {
+        const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'users'), newUser);
+        setCurrentUser({ ...newUser, id: docRef.id });
+        logAction(`新使用者註冊: ${name}`);
+        setView('lobby');
+        showToast("註冊成功！", "success");
+      } catch (e) {
+        console.error("Error adding user: ", e);
+        showToast(`註冊失敗 (資料庫錯誤): ${e.message}`, "error");
       }
-      
-      setView('lobby');
-      showToast("註冊成功！", "success");
     }
   };
 
@@ -320,34 +331,42 @@ export default function App() {
     };
 
     if (db) {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), newParty);
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), newParty);
+        notifyAction(`${currentUser.name} 建立了一個新組隊！\n📅 時間: ${formatDate(createPartyForm.time)}\n⚔️ 場次: ${createPartyForm.runs} 場`);
+        logAction(`建立組隊: by ${currentUser.name}, Time: ${createPartyForm.time}`);
+        
+        setIsCreateModalOpen(false);
+        setCreatePartyForm({ time: '', runs: '4', twoTeams: true });
+        showToast("組隊建立成功", "success");
+      } catch (e) {
+        console.error("Create Party Error:", e);
+        showToast(`建立組隊失敗: ${e.message}`, "error");
+      }
+    } else {
+      showToast("資料庫未連線，無法建立", "error");
     }
-    
-    notifyAction(`${currentUser.name} 建立了一個新組隊！\n📅 時間: ${formatDate(createPartyForm.time)}\n⚔️ 場次: ${createPartyForm.runs} 場`);
-    logAction(`建立組隊: by ${currentUser.name}, Time: ${createPartyForm.time}`);
-
-    setIsCreateModalOpen(false);
-    setCreatePartyForm({ time: '', runs: '4', twoTeams: true });
-    showToast("組隊建立成功", "success");
   };
 
   const handleDeleteParty = async (partyId) => {
     if (!window.confirm("確定要刪除這個組隊嗎？")) return;
     const party = parties.find(p => p.id === partyId);
     if (db) {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId));
+      try {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId));
+        notifyAction(`❌ 組隊已取消/刪除\n建立者: ${party?.creatorName}\n時間: ${formatDate(party?.scheduledTime)}`);
+        logAction(`刪除組隊: ID ${partyId} by ${currentUser.name}`);
+        showToast("組隊已刪除", "info");
+      } catch (e) {
+        showToast(`刪除失敗: ${e.message}`, "error");
+      }
     }
-    notifyAction(`❌ 組隊已取消/刪除\n建立者: ${party?.creatorName}\n時間: ${formatDate(party?.scheduledTime)}`);
-    logAction(`刪除組隊: ID ${partyId} by ${currentUser.name}`);
-    showToast("組隊已刪除", "info");
   };
 
   const handleJoinParty = async (partyId, teamKey, slotIndex, charData) => {
-    // charData is now { name: "Name", job: "classId" }
     const party = parties.find(p => p.id === partyId);
     if (!party) return;
 
-    // Check if user is already in this party
     const allSlots = [...party.team1, ...(party.team2 || [])];
     const isAlreadyInParty = allSlots.some(slot => slot && slot.userId === currentUser.id);
 
@@ -360,19 +379,22 @@ export default function App() {
       userId: currentUser.id,
       userName: currentUser.name,
       charName: charData.name,
-      charJob: charData.job // Store job in the slot
+      charJob: charData.job
     };
 
     if (db) {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
-        [teamKey]: newTeam
-      });
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
+          [teamKey]: newTeam
+        });
+        const className = CLASSES.find(c => c.id === charData.job)?.name || "未知";
+        notifyAction(`➕ ${currentUser.name} 加入了組隊\n角色: ${charData.name} (${className})`);
+        logAction(`加入組隊: ${currentUser.name} joined Party ${partyId}`);
+        showToast("加入成功！", "success");
+      } catch (e) {
+        showToast(`加入失敗: ${e.message}`, "error");
+      }
     }
-
-    const className = CLASSES.find(c => c.id === charData.job)?.name || "未知";
-    notifyAction(`➕ ${currentUser.name} 加入了組隊\n角色: ${charData.name} (${className})`);
-    logAction(`加入組隊: ${currentUser.name} joined Party ${partyId}`);
-    showToast("加入成功！", "success");
   };
 
   const handleLeaveParty = async (partyId, teamKey, slotIndex) => {
@@ -388,14 +410,17 @@ export default function App() {
     newTeam[slotIndex] = null;
 
     if (db) {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
-        [teamKey]: newTeam
-      });
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
+            [teamKey]: newTeam
+        });
+        notifyAction(`➖ ${slot.userName} 離開了組隊\n角色: ${slot.charName}`);
+        logAction(`離開組隊: ${slot.userName} left Party ${partyId}`);
+        showToast("已離開位置", "info");
+      } catch (e) {
+        showToast(`操作失敗: ${e.message}`, "error");
+      }
     }
-
-    notifyAction(`➖ ${slot.userName} 離開了組隊\n角色: ${slot.charName}`);
-    logAction(`離開組隊: ${slot.userName} left Party ${partyId}`);
-    showToast("已離開位置", "info");
   };
 
   const handleCompleteParty = async (party) => {
@@ -413,13 +438,17 @@ export default function App() {
     };
 
     if (db) {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry);
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' });
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry);
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' });
+        
+        notifyAction(`✅ 組隊通關完成！\n隊長: ${party.creatorName}\n時間: ${formatDate(party.scheduledTime)}\n場次: ${party.estimatedRuns}`);
+        logAction(`完成組隊: Party ${party.id} completed`);
+        showToast("組隊已完成並封存", "success");
+      } catch (e) {
+        showToast(`封存失敗: ${e.message}`, "error");
+      }
     }
-    
-    notifyAction(`✅ 組隊通關完成！\n隊長: ${party.creatorName}\n時間: ${formatDate(party.scheduledTime)}\n場次: ${party.estimatedRuns}`);
-    logAction(`完成組隊: Party ${party.id} completed`);
-    showToast("組隊已完成並封存", "success");
   };
 
   // NEW: Updated to handle object structure { name, job }
@@ -433,17 +462,24 @@ export default function App() {
 
     const updatedChars = [...(currentUser.characters || []), newCharObj];
     
+    // Optimistic update
     setCurrentUser({ ...currentUser, characters: updatedChars });
 
     if (db) {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
-        characters: updatedChars
-      });
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
+            characters: updatedChars
+        });
+        logAction(`新增角色: ${currentUser.name} added ${newCharObj.name} (${newCharObj.job})`);
+        setNewCharName('');
+        showToast("角色已新增", "success");
+      } catch (e) {
+        console.error("Add Char Error:", e);
+        showToast(`新增角色失敗 (無法存檔): ${e.message}`, "error");
+      }
+    } else {
+        showToast("資料庫未連線，請檢查設定", "error");
     }
-    
-    logAction(`新增角色: ${currentUser.name} added ${newCharObj.name} (${newCharObj.job})`);
-    setNewCharName('');
-    showToast("角色已新增", "success");
   };
 
   const handleUpdateCharacter = async () => {
@@ -451,8 +487,6 @@ export default function App() {
     if (!name.trim() || index === null) return;
     
     const updatedChars = [...currentUser.characters];
-    // Keep the existing job, only update name. 
-    // Need to handle if the existing entry is just a string (old format)
     const oldEntry = updatedChars[index];
     const job = typeof oldEntry === 'string' ? 'unknown' : oldEntry.job;
     
@@ -461,16 +495,19 @@ export default function App() {
     setCurrentUser({ ...currentUser, characters: updatedChars });
     
     if (db) {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
-        characters: updatedChars
-      });
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
+            characters: updatedChars
+        });
+        setEditingChar({ index: null, name: '' });
+        showToast("角色名稱已更新", "success");
+      } catch (e) {
+        showToast(`更新失敗: ${e.message}`, "error");
+      }
     }
-    setEditingChar({ index: null, name: '' });
-    showToast("角色名稱已更新", "success");
   };
 
   const handleRemoveCharacter = async (charData) => {
-    // charData could be string or object
     const charName = typeof charData === 'string' ? charData : charData.name;
     const updatedChars = currentUser.characters.filter(c => {
         const cName = typeof c === 'string' ? c : c.name;
@@ -480,25 +517,37 @@ export default function App() {
     setCurrentUser({ ...currentUser, characters: updatedChars });
     
     if (db) {
-      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
-        characters: updatedChars
-      });
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
+            characters: updatedChars
+        });
+      } catch (e) {
+        showToast(`刪除失敗: ${e.message}`, "error");
+      }
     }
   };
   
   const handleAdminResetPin = async (userId, newPin) => {
       if(db) {
-          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { pin: newPin });
-          logAction(`管理員重設密碼: for User ID ${userId}`);
+          try {
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { pin: newPin });
+            logAction(`管理員重設密碼: for User ID ${userId}`);
+            showToast("密碼已重設", "success");
+          } catch (e) {
+            showToast(`重設失敗: ${e.message}`, "error");
+          }
       }
-      showToast("密碼已重設", "success");
   }
 
   const handleSaveWebhooks = async () => {
       if(db) {
-          await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), webhooks);
-          logAction(`系統設定更新: Webhooks updated`);
-          showToast("Webhook 設定已儲存", "success");
+          try {
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), webhooks);
+            logAction(`系統設定更新: Webhooks updated`);
+            showToast("Webhook 設定已儲存", "success");
+          } catch (e) {
+            showToast(`儲存失敗: ${e.message}`, "error");
+          }
       }
   }
 
@@ -722,6 +771,12 @@ export default function App() {
                  >
                    進入聖域
                  </button>
+                 {!db && (
+                    <div className="flex items-center gap-2 justify-center text-rose-400 text-xs mt-4 bg-rose-500/10 p-2 rounded">
+                        <AlertTriangle size={14} />
+                        <span>尚未連線至資料庫，請檢查程式碼設定</span>
+                    </div>
+                 )}
               </div>
            </GlassCard>
         </div>

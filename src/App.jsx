@@ -240,7 +240,6 @@ export default function App() {
         }
       }, (err) => {
           console.error("Setting fetch error:", err);
-          // Don't show toast for settings as it might not exist yet
       });
 
       const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => {
@@ -270,6 +269,22 @@ export default function App() {
     }
   }, [auth?.currentUser]);
 
+  // NEW: 自動登入偵測
+  useEffect(() => {
+    // 只有在「未登入」且「使用者列表已載入」時才執行
+    if (!currentUser && users.length > 0) {
+      const storedUserId = localStorage.getItem('sanctuary_user_id');
+      if (storedUserId) {
+        const foundUser = users.find(u => u.id === storedUserId);
+        if (foundUser) {
+          setCurrentUser(foundUser);
+          setView('lobby');
+          showToast(`自動登入成功：${foundUser.name}`, "success");
+        }
+      }
+    }
+  }, [users, currentUser]);
+
 
   // --- Actions ---
 
@@ -277,7 +292,6 @@ export default function App() {
     const { name, pin } = loginForm;
     if (!name || pin.length !== 4) return showToast("請輸入名稱與4位數密碼", "error");
 
-    // 確認 Firebase 連線狀態
     if (!db) return showToast("資料庫未連線，請檢查 API Key", "error");
 
     const existingUser = users.find(u => u.name === name);
@@ -285,6 +299,9 @@ export default function App() {
     if (existingUser) {
       if (existingUser.pin === pin) {
         setCurrentUser(existingUser);
+        // Save ID for auto-login
+        localStorage.setItem('sanctuary_user_id', existingUser.id);
+        
         setView('lobby');
         showToast(`歡迎回來，${name}`, "success");
         logAction(`使用者登入: ${name}`);
@@ -304,7 +321,11 @@ export default function App() {
 
       try {
         const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'users'), newUser);
-        setCurrentUser({ ...newUser, id: docRef.id });
+        const newUserWithId = { ...newUser, id: docRef.id };
+        setCurrentUser(newUserWithId);
+        // Save ID for auto-login
+        localStorage.setItem('sanctuary_user_id', docRef.id);
+        
         logAction(`新使用者註冊: ${name}`);
         setView('lobby');
         showToast("註冊成功！", "success");
@@ -451,7 +472,6 @@ export default function App() {
     }
   };
 
-  // NEW: Updated to handle object structure { name, job }
   const handleAddCharacter = async () => {
     if (!newCharName.trim()) return;
     
@@ -462,7 +482,6 @@ export default function App() {
 
     const updatedChars = [...(currentUser.characters || []), newCharObj];
     
-    // Optimistic update
     setCurrentUser({ ...currentUser, characters: updatedChars });
 
     if (db) {
@@ -808,7 +827,11 @@ export default function App() {
                <span className="text-sm font-medium">{currentUser?.name}</span>
             </div>
             <button 
-              onClick={() => { setView('auth'); setCurrentUser(null); }}
+              onClick={() => { 
+                localStorage.removeItem('sanctuary_user_id'); // 登出時移除紀錄
+                setView('auth'); 
+                setCurrentUser(null); 
+              }}
               className="p-2 text-slate-400 hover:text-white transition-colors"
             >
               <LogOut size={20} />

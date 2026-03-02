@@ -3,7 +3,7 @@ import {
   Users, Sword, Shield, Plus, Trash2, LogOut, 
   Settings, User, Calendar, CheckCircle, XCircle, 
   X, Crown, Activity, History, KeyRound, Edit2, Save,
-  MessageSquare, Globe, AlertTriangle
+  Globe, AlertTriangle, GripVertical, UserMinus
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -30,8 +30,8 @@ const CLASSES = [
   { id: 'chanter', name: '護法星', icon: 'chanter.webp', color: 'text-indigo-400' },
 ];
 
-// --- Vercel / 本地端 直接寫死 API Key 設定 ---
-// 請將下方的字串替換成您 Firebase Console > Project Settings > SDK Config 中的內容
+const SERVERS = ['艾萊', '伊斯拉', '普羅米', '吉凱爾', '馬庫坦', '泰萊馬科斯']; // 請依需求自行修改增減
+
 const firebaseConfig = {
   apiKey: "AIzaSyCYgTY7d4jvq-q2yj-jtlRfHRysOc-4Fc4",
   authDomain: "sanui-8cdf1.firebaseapp.com",
@@ -42,11 +42,10 @@ const firebaseConfig = {
   measurementId: "G-M988BQMECB"
 };
 
-const appId = 'sanui'; // 固定 ID，確保資料路徑一致
+const appId = 'sanui';
 
 let auth, db;
 
-// 初始化邏輯
 if (firebaseConfig.apiKey && !firebaseConfig.apiKey.includes("請在此填入")) {
   try {
     const app = initializeApp(firebaseConfig);
@@ -55,8 +54,6 @@ if (firebaseConfig.apiKey && !firebaseConfig.apiKey.includes("請在此填入"))
   } catch (error) {
     console.error("Firebase 初始化失敗:", error);
   }
-} else {
-  console.error("錯誤：請在 src/App.jsx 中填入正確的 Firebase Config 資料！");
 }
 
 /**
@@ -74,15 +71,12 @@ const GlobalStyles = () => (
     .animate-breathe {
       animation: breathe 4s ease-in-out infinite;
     }
-    .class-icon-shadow {
-      filter: drop-shadow(0 0 5px rgba(255,255,255,0.3));
-    }
   `}</style>
 );
 
 const Toast = ({ message, type, onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 5000); // 延長顯示時間以便閱讀錯誤
+    const timer = setTimeout(onClose, 5000);
     return () => clearTimeout(timer);
   }, [onClose]);
 
@@ -134,30 +128,29 @@ const GlassCard = ({ children, className = "" }) => (
  * ------------------------------------------------------------------
  */
 export default function App() {
-  // --- Global State ---
   const [currentUser, setCurrentUser] = useState(null); 
-  const [authUser, setAuthUser] = useState(null); // 新增：追蹤 Firebase Auth 狀態
+  const [authUser, setAuthUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
   const [webhooks, setWebhooks] = useState({ logUrl: '', notifyUrl: '' });
   
-  // --- Data State ---
   const [users, setUsers] = useState([]);
   const [parties, setParties] = useState([]);
   const [logs, setLogs] = useState([]);
   
-  // --- Local UI State ---
   const [view, setView] = useState('auth'); 
+  const [lobbyFilter, setLobbyFilter] = useState('all'); // 新增：大廳過濾器
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingChar, setEditingChar] = useState({ index: null, name: '' });
   
-  // --- Inputs ---
   const [loginForm, setLoginForm] = useState({ name: '', pin: '' });
   const [createPartyForm, setCreatePartyForm] = useState({ time: '', runs: '4', twoTeams: true });
-  const [newCharName, setNewCharName] = useState('');
-  const [newCharClass, setNewCharClass] = useState('gladiator'); // Default class
+  const [selectedReserveUsers, setSelectedReserveUsers] = useState([]); // 新增：保留位名單
   
-  // --- Helpers ---
+  const [newCharName, setNewCharName] = useState('');
+  const [newCharClass, setNewCharClass] = useState('gladiator');
+  const [newCharServer, setNewCharServer] = useState(SERVERS[0]); // 新增：伺服器選擇
+  
   const showToast = (msg, type = 'info') => setToast({ message: msg, type });
 
   const formatDate = (dateString) => {
@@ -168,18 +161,48 @@ export default function App() {
   };
 
   const getCharInfo = (charData) => {
-    if (typeof charData === 'string') {
-      return { name: charData, job: 'unknown', icon: null };
-    }
+    if (typeof charData === 'string') return { name: charData, job: 'unknown', icon: null };
     const cls = CLASSES.find(c => c.id === charData.job);
     return { name: charData.name, job: charData.job, icon: cls ? cls.icon : null, color: cls ? cls.color : 'text-slate-200' };
   };
 
-  // --- Discord Logic ---
+  // --- 計算每週三中午 12 點重置時間 ---
+  const getLastResetTime = () => {
+    const now = new Date();
+    const dayOfWeek = now.getDay(); 
+    const resetDay = 3; // 星期三
+    let daysSinceReset = dayOfWeek - resetDay;
+    if (daysSinceReset < 0) daysSinceReset += 7;
+
+    const resetDate = new Date(now);
+    resetDate.setDate(now.getDate() - daysSinceReset);
+    resetDate.setHours(12, 0, 0, 0);
+
+    if (dayOfWeek === 3 && now.getHours() < 12) {
+      resetDate.setDate(resetDate.getDate() - 7);
+    }
+    return resetDate.getTime();
+  };
+
+  // --- 計算角色本週已打場次 ---
+  const getCharacterWeeklyRuns = (charName) => {
+    const resetTime = getLastResetTime();
+    let runs = 0;
+    logs.forEach(log => {
+      if (log.completedAt >= resetTime) {
+        log.participants.forEach(p => {
+          if (p && p.userId === currentUser?.id && p.charName === charName) {
+            runs += parseInt(log.runs || 1, 10);
+          }
+        });
+      }
+    });
+    return runs;
+  };
+
   const sendDiscord = async (type, content) => {
     const url = type === 'notify' ? webhooks.notifyUrl : webhooks.logUrl;
     if (!url || !url.startsWith('http')) return;
-
     try {
       await fetch(url, {
         method: 'POST',
@@ -190,89 +213,50 @@ export default function App() {
           avatar_url: "https://cdn-icons-png.flaticon.com/512/3578/3578768.png" 
         }),
       });
-    } catch (e) {
-      console.error("Discord Webhook Error:", e);
-    }
+    } catch (e) { console.error("Discord Webhook Error:", e); }
   };
 
   const logAction = (msg) => sendDiscord('log', `[LOG] ${new Date().toLocaleTimeString()} - ${msg}`);
   const notifyAction = (msg) => sendDiscord('notify', `📣 **聖域快訊**\n${msg}`);
 
-
-  // --- Auth & Data Loading Effects ---
   useEffect(() => {
     const initAuth = async () => {
       if (auth) {
-        try {
-          if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-            await signInWithCustomToken(auth, __initial_auth_token);
-          } else {
-            // 重要：嘗試匿名登入
-            await signInAnonymously(auth);
-          }
-        } catch (error) {
-          console.error("Auth Error:", error);
-          showToast(`登入服務初始化失敗: ${error.message}`, "error");
-        }
-      } else {
-        setLoading(false);
-      }
+        try { await signInAnonymously(auth); } catch (e) { showToast(`登入失敗: ${e.message}`, "error"); }
+      } else { setLoading(false); }
     };
     initAuth();
-    
     if (auth) {
       const unsub = onAuthStateChanged(auth, (user) => {
-        setAuthUser(user); // 修正點：將 Firebase User 存入 State，觸發重新渲染
-        if (!user) {
-            setLoading(false); 
-        } else {
-            console.log("Firebase Auth Connected:", user.uid);
-        }
+        setAuthUser(user);
+        if (!user) setLoading(false); 
       });
       return () => unsub();
     }
   }, []);
 
-  // Fetch Data (修正依賴為 authUser)
   useEffect(() => {
-    // 改用 authUser 狀態來判斷是否讀取資料
     if (auth && authUser) {
       const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'settings'), (docSnap) => {
-        if (docSnap.exists()) {
-          setWebhooks(docSnap.data());
-        }
-      }, (err) => {
-          console.error("Setting fetch error:", err);
+        if (docSnap.exists()) setWebhooks(docSnap.data());
       });
-
       const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => {
         setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      }, (err) => {
-          console.error("Users fetch error:", err);
-          showToast(`無法讀取使用者資料: ${err.message}`, "error");
       });
-
       const unsubParties = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), (snap) => {
         const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
         list.sort((a, b) => b.createdAt - a.createdAt);
         setParties(list);
-      }, (err) => {
-          console.error("Parties fetch error:", err);
-          showToast(`無法讀取組隊資料: ${err.message}`, "error");
       });
-
       const unsubLogs = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), (snap) => {
         setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      }, (err) => {
-           console.error("Logs fetch error:", err);
       });
 
       setLoading(false);
       return () => { unsubSettings(); unsubUsers(); unsubParties(); unsubLogs(); };
     }
-  }, [authUser]); // 依賴改成 authUser
+  }, [authUser]);
 
-  // 自動登入偵測
   useEffect(() => {
     if (!currentUser && users.length > 0) {
       const storedUserId = localStorage.getItem('sanctuary_user_id');
@@ -287,103 +271,84 @@ export default function App() {
     }
   }, [users, currentUser]);
 
-
-  // --- Actions ---
-
   const handleLogin = async () => {
     const { name, pin } = loginForm;
     if (!name || pin.length !== 4) return showToast("請輸入名稱與4位數密碼", "error");
-
     if (!db) return showToast("資料庫未連線，請檢查 API Key", "error");
 
     const existingUser = users.find(u => u.name === name);
-
     if (existingUser) {
       if (existingUser.pin === pin) {
         setCurrentUser(existingUser);
-        // Save ID for auto-login
         localStorage.setItem('sanctuary_user_id', existingUser.id);
-        
         setView('lobby');
         showToast(`歡迎回來，${name}`, "success");
         logAction(`使用者登入: ${name}`);
-      } else {
-        showToast("密碼錯誤", "error");
-        logAction(`登入失敗: ${name} (密碼錯誤)`);
-      }
+      } else { showToast("密碼錯誤", "error"); }
     } else {
-      // Register
-      const newUser = {
-        name,
-        pin,
-        role: name === 'Wolf' ? 'admin' : 'user', 
-        characters: [],
-        createdAt: Date.now()
-      };
-
+      const newUser = { name, pin, role: name === 'Wolf' ? 'admin' : 'user', characters: [], createdAt: Date.now() };
       try {
         const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'users'), newUser);
-        const newUserWithId = { ...newUser, id: docRef.id };
-        setCurrentUser(newUserWithId);
-        // Save ID for auto-login
+        setCurrentUser({ ...newUser, id: docRef.id });
         localStorage.setItem('sanctuary_user_id', docRef.id);
-        
         logAction(`新使用者註冊: ${name}`);
         setView('lobby');
         showToast("註冊成功！", "success");
-      } catch (e) {
-        console.error("Error adding user: ", e);
-        showToast(`註冊失敗 (資料庫錯誤): ${e.message}`, "error");
-      }
+      } catch (e) { showToast(`註冊失敗: ${e.message}`, "error"); }
     }
   };
 
   const handleCreateParty = async () => {
     if (!createPartyForm.time) return showToast("請選擇出團時間", "error");
 
+    const maxSlots = createPartyForm.twoTeams ? 8 : 4;
+    const initialTeam1 = Array(4).fill(null);
+    const initialTeam2 = createPartyForm.twoTeams ? Array(4).fill(null) : null;
+
+    // 將保留名單排入空位
+    selectedReserveUsers.slice(0, maxSlots).forEach((user, idx) => {
+        const slotData = { userId: user.id, userName: user.name, charName: null, charJob: null }; // charName=null 代表只佔位未選角
+        if (idx < 4) initialTeam1[idx] = slotData;
+        else if (initialTeam2) initialTeam2[idx - 4] = slotData;
+    });
+
     const newParty = {
       creatorId: currentUser.id,
       creatorName: currentUser.name,
       createdAt: Date.now(),
       scheduledTime: createPartyForm.time,
-      estimatedRuns: createPartyForm.runs,
+      estimatedRuns: parseInt(createPartyForm.runs) || 1,
       status: 'open',
       isTwoTeams: createPartyForm.twoTeams,
-      team1: Array(4).fill(null), 
-      team2: createPartyForm.twoTeams ? Array(4).fill(null) : null,
+      team1: initialTeam1, 
+      team2: initialTeam2,
     };
 
-    if (db) {
-      try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), newParty);
-        notifyAction(`${currentUser.name} 建立了一個新組隊！\n📅 時間: ${formatDate(createPartyForm.time)}\n⚔️ 場次: ${createPartyForm.runs} 場`);
-        logAction(`建立組隊: by ${currentUser.name}, Time: ${createPartyForm.time}`);
-        
-        setIsCreateModalOpen(false);
-        setCreatePartyForm({ time: '', runs: '4', twoTeams: true });
-        showToast("組隊建立成功", "success");
-      } catch (e) {
-        console.error("Create Party Error:", e);
-        showToast(`建立組隊失敗: ${e.message}`, "error");
-      }
-    } else {
-      showToast("資料庫未連線，無法建立", "error");
-    }
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), newParty);
+      notifyAction(`${currentUser.name} 建立了一個新組隊！\n📅 時間: ${formatDate(createPartyForm.time)}\n⚔️ 場次: ${createPartyForm.runs} 場`);
+      setIsCreateModalOpen(false);
+      setCreatePartyForm({ time: '', runs: '4', twoTeams: true });
+      setSelectedReserveUsers([]);
+      showToast("組隊建立成功", "success");
+    } catch (e) { showToast(`建立失敗: ${e.message}`, "error"); }
+  };
+
+  const handleEditRuns = async (partyId, currentRuns) => {
+    const newRuns = prompt("請輸入新的場次數量:", currentRuns);
+    if (!newRuns || isNaN(newRuns) || parseInt(newRuns) <= 0) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { estimatedRuns: parseInt(newRuns) });
+      showToast("場次已更新", "success");
+    } catch (e) { showToast(`更新失敗: ${e.message}`, "error"); }
   };
 
   const handleDeleteParty = async (partyId) => {
     if (!window.confirm("確定要刪除這個組隊嗎？")) return;
-    const party = parties.find(p => p.id === partyId);
-    if (db) {
-      try {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId));
-        notifyAction(`❌ 組隊已取消/刪除\n建立者: ${party?.creatorName}\n時間: ${formatDate(party?.scheduledTime)}`);
-        logAction(`刪除組隊: ID ${partyId} by ${currentUser.name}`);
-        showToast("組隊已刪除", "info");
-      } catch (e) {
-        showToast(`刪除失敗: ${e.message}`, "error");
-      }
-    }
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId));
+      showToast("組隊已刪除", "info");
+    } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
 
   const handleJoinParty = async (partyId, teamKey, slotIndex, charData) => {
@@ -391,226 +356,182 @@ export default function App() {
     if (!party) return;
 
     const allSlots = [...party.team1, ...(party.team2 || [])];
-    const isAlreadyInParty = allSlots.some(slot => slot && slot.userId === currentUser.id);
+    const isAlreadyInOtherSlot = allSlots.some((slot, idx) => {
+        // 檢查他是否已經在「別的位置」上
+        const isSameSlot = (teamKey === 'team1' ? idx : idx + 4) === slotIndex;
+        return !isSameSlot && slot && slot.userId === currentUser.id;
+    });
 
-    if (isAlreadyInParty) {
-      return showToast("您已經在這個組隊中了 (一人一角)", "error");
+    if (isAlreadyInOtherSlot) {
+      return showToast("您已經在這個組隊的其他位置中了", "error");
     }
 
     const newTeam = [...party[teamKey]];
-    newTeam[slotIndex] = {
-      userId: currentUser.id,
-      userName: currentUser.name,
-      charName: charData.name,
-      charJob: charData.job
-    };
+    newTeam[slotIndex] = { userId: currentUser.id, userName: currentUser.name, charName: charData.name, charJob: charData.job };
 
-    if (db) {
-      try {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
-          [teamKey]: newTeam
-        });
-        const className = CLASSES.find(c => c.id === charData.job)?.name || "未知";
-        notifyAction(`➕ ${currentUser.name} 加入了組隊\n角色: ${charData.name} (${className})`);
-        logAction(`加入組隊: ${currentUser.name} joined Party ${partyId}`);
-        showToast("加入成功！", "success");
-      } catch (e) {
-        showToast(`加入失敗: ${e.message}`, "error");
-      }
-    }
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam });
+      showToast("加入成功！", "success");
+    } catch (e) { showToast(`加入失敗: ${e.message}`, "error"); }
   };
 
   const handleLeaveParty = async (partyId, teamKey, slotIndex) => {
     const party = parties.find(p => p.id === partyId);
     if (!party) return;
-    
     const slot = party[teamKey][slotIndex];
-    if (slot.userId !== currentUser.id && currentUser.role !== 'admin') {
-      return showToast("你不能踢出別人", "error");
+    if (slot.userId !== currentUser.id && currentUser.role !== 'admin' && currentUser.id !== party.creatorId) {
+      return showToast("權限不足，無法踢除", "error");
     }
-
     const newTeam = [...party[teamKey]];
     newTeam[slotIndex] = null;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam });
+    } catch (e) { showToast(`操作失敗: ${e.message}`, "error"); }
+  };
 
-    if (db) {
+  const handleDragDropSwap = async (partyId, sourceTeam, sourceIdx, targetTeam, targetIdx) => {
+      const party = parties.find(p => p.id === partyId);
+      if (!party) return;
+      const newTeam1 = [...party.team1];
+      const newTeam2 = party.team2 ? [...party.team2] : null;
+      
+      const getSlot = (t, i) => t === 'team1' ? newTeam1[i] : newTeam2[i];
+      const setSlot = (t, i, val) => t === 'team1' ? (newTeam1[i] = val) : (newTeam2[i] = val);
+
+      const temp = getSlot(sourceTeam, sourceIdx);
+      setSlot(sourceTeam, sourceIdx, getSlot(targetTeam, targetIdx));
+      setSlot(targetTeam, targetIdx, temp);
+
       try {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
-            [teamKey]: newTeam
-        });
-        notifyAction(`➖ ${slot.userName} 離開了組隊\n角色: ${slot.charName}`);
-        logAction(`離開組隊: ${slot.userName} left Party ${partyId}`);
-        showToast("已離開位置", "info");
-      } catch (e) {
-        showToast(`操作失敗: ${e.message}`, "error");
-      }
-    }
+          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), {
+              team1: newTeam1,
+              ...(newTeam2 && { team2: newTeam2 })
+          });
+      } catch (e) { showToast("換位失敗", "error"); }
   };
 
   const handleCompleteParty = async (party) => {
     if (!window.confirm("確定標記為已完成嗎？這將會封存紀錄。")) return;
-
     const logEntry = {
-      partyId: party.id,
-      completedAt: Date.now(),
-      scheduledTime: party.scheduledTime,
-      runs: party.estimatedRuns,
-      participants: [
-        ...(party.team1 || []).filter(s => s),
-        ...(party.team2 || []).filter(s => s)
-      ]
+      partyId: party.id, completedAt: Date.now(), scheduledTime: party.scheduledTime, runs: party.estimatedRuns,
+      participants: [...(party.team1 || []).filter(s => s?.charName), ...(party.team2 || []).filter(s => s?.charName)]
     };
-
-    if (db) {
-      try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry);
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' });
-        
-        notifyAction(`✅ 組隊通關完成！\n隊長: ${party.creatorName}\n時間: ${formatDate(party.scheduledTime)}\n場次: ${party.estimatedRuns}`);
-        logAction(`完成組隊: Party ${party.id} completed`);
-        showToast("組隊已完成並封存", "success");
-      } catch (e) {
-        showToast(`封存失敗: ${e.message}`, "error");
-      }
-    }
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry);
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' });
+      showToast("組隊已完成並封存", "success");
+    } catch (e) { showToast(`封存失敗: ${e.message}`, "error"); }
   };
 
   const handleAddCharacter = async () => {
     if (!newCharName.trim()) return;
-    
-    const newCharObj = {
-        name: newCharName.trim(),
-        job: newCharClass
-    };
-
+    const fullName = `${newCharName.trim()}[${newCharServer}]`;
+    const newCharObj = { name: fullName, job: newCharClass };
     const updatedChars = [...(currentUser.characters || []), newCharObj];
     
-    setCurrentUser({ ...currentUser, characters: updatedChars });
-
-    if (db) {
-      try {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
-            characters: updatedChars
-        });
-        logAction(`新增角色: ${currentUser.name} added ${newCharObj.name} (${newCharObj.job})`);
-        setNewCharName('');
-        showToast("角色已新增", "success");
-      } catch (e) {
-        console.error("Add Char Error:", e);
-        showToast(`新增角色失敗 (無法存檔): ${e.message}`, "error");
-      }
-    } else {
-        showToast("資料庫未連線，請檢查設定", "error");
-    }
-  };
-
-  const handleUpdateCharacter = async () => {
-    const { index, name } = editingChar;
-    if (!name.trim() || index === null) return;
-    
-    const updatedChars = [...currentUser.characters];
-    const oldEntry = updatedChars[index];
-    const job = typeof oldEntry === 'string' ? 'unknown' : oldEntry.job;
-    
-    updatedChars[index] = { name: name.trim(), job };
-    
-    setCurrentUser({ ...currentUser, characters: updatedChars });
-    
-    if (db) {
-      try {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
-            characters: updatedChars
-        });
-        setEditingChar({ index: null, name: '' });
-        showToast("角色名稱已更新", "success");
-      } catch (e) {
-        showToast(`更新失敗: ${e.message}`, "error");
-      }
-    }
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), { characters: updatedChars });
+      setCurrentUser({ ...currentUser, characters: updatedChars });
+      setNewCharName('');
+      showToast("角色已新增", "success");
+    } catch (e) { showToast(`新增失敗: ${e.message}`, "error"); }
   };
 
   const handleRemoveCharacter = async (charData) => {
     const charName = typeof charData === 'string' ? charData : charData.name;
-    const updatedChars = currentUser.characters.filter(c => {
-        const cName = typeof c === 'string' ? c : c.name;
-        return cName !== charName;
-    });
-
-    setCurrentUser({ ...currentUser, characters: updatedChars });
-    
-    if (db) {
-      try {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), {
-            characters: updatedChars
-        });
-      } catch (e) {
-        showToast(`刪除失敗: ${e.message}`, "error");
-      }
-    }
+    const updatedChars = currentUser.characters.filter(c => (typeof c === 'string' ? c : c.name) !== charName);
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), { characters: updatedChars });
+      setCurrentUser({ ...currentUser, characters: updatedChars });
+    } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
-  
-  const handleAdminResetPin = async (userId, newPin) => {
-      if(db) {
-          try {
-            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { pin: newPin });
-            logAction(`管理員重設密碼: for User ID ${userId}`);
-            showToast("密碼已重設", "success");
-          } catch (e) {
-            showToast(`重設失敗: ${e.message}`, "error");
-          }
-      }
-  }
 
-  const handleSaveWebhooks = async () => {
-      if(db) {
-          try {
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), webhooks);
-            logAction(`系統設定更新: Webhooks updated`);
-            showToast("Webhook 設定已儲存", "success");
-          } catch (e) {
-            showToast(`儲存失敗: ${e.message}`, "error");
+  const handleAdminDeleteUser = async (userToDelete) => {
+      if(!window.confirm(`確定要完全刪除 ${userToDelete.name} 嗎？這將會把他從所有開放中的組隊踢除！`)) return;
+      try {
+          // 清空這名玩家在所有開放隊伍中的位置
+          for (const party of parties.filter(p => p.status === 'open')) {
+              let changed = false;
+              const cleanTeam = (team) => team.map(s => {
+                  if (s && s.userId === userToDelete.id) { changed = true; return null; }
+                  return s;
+              });
+              const newTeam1 = cleanTeam(party.team1);
+              const newTeam2 = party.team2 ? cleanTeam(party.team2) : null;
+              if (changed) {
+                  await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), {
+                      team1: newTeam1, ...(newTeam2 && { team2: newTeam2 })
+                  });
+              }
           }
-      }
-  }
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userToDelete.id));
+          showToast(`${userToDelete.name} 已被完全刪除`, "success");
+      } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
+  };
 
   // --- Sub-Components ---
 
-  const SlotButton = ({ slot, onJoin, onLeave }) => {
+  const SlotButton = ({ slot, onJoin, onLeave, party, teamKey, index }) => {
+    const isCreatorOrAdmin = currentUser?.role === 'admin' || currentUser?.id === party.creatorId;
+    
+    const handleDragStart = (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({ teamKey, index }));
+    };
+    const handleDrop = (e) => {
+        e.preventDefault();
+        try {
+            const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+            if (data.teamKey === teamKey && data.index === index) return; // Same slot
+            handleDragDropSwap(party.id, data.teamKey, data.index, teamKey, index);
+        } catch (err) { /* ignore invalid drop */ }
+    };
+
     if (!slot) {
       return (
-        <button 
-          onClick={onJoin}
-          className="h-14 w-full border border-dashed border-slate-600 rounded-lg flex items-center justify-center text-slate-500 hover:text-emerald-400 hover:border-emerald-400 hover:bg-emerald-400/10 transition-all group"
+        <div 
+          onDragOver={isCreatorOrAdmin ? (e) => e.preventDefault() : undefined} 
+          onDrop={isCreatorOrAdmin ? handleDrop : undefined}
+          className="h-14 w-full"
         >
-          <Plus className="group-hover:scale-110 transition-transform" />
-        </button>
+          <button 
+            onClick={onJoin}
+            className="h-full w-full border border-dashed border-slate-600 rounded-lg flex items-center justify-center text-slate-500 hover:text-emerald-400 hover:border-emerald-400 hover:bg-emerald-400/10 transition-all group"
+          >
+            <Plus className="group-hover:scale-110 transition-transform" />
+          </button>
+        </div>
       );
     }
     
-    const isMe = slot.userId === currentUser.id;
-    // slot.charJob should be stored in party data. If not (old data), fallback.
+    const isMe = slot.userId === currentUser?.id;
+    const isReserved = slot.charName === null; // 沒有角色名稱代表是保留位
     const jobInfo = CLASSES.find(c => c.id === slot.charJob);
 
     return (
-      <div className={`h-14 w-full rounded-lg flex items-center justify-between px-3 border transition-all ${isMe ? 'bg-violet-600/20 border-violet-500/50' : 'bg-slate-700/50 border-slate-600'}`}>
-        <div className="flex items-center gap-3 overflow-hidden">
-            {/* Class Icon */}
-            <div className="w-10 h-10 rounded-full bg-slate-800 border border-slate-600 flex items-center justify-center shrink-0 relative overflow-hidden">
-                {jobInfo ? (
-                    <img src={jobInfo.icon} alt={jobInfo.name} className="w-full h-full object-cover" />
-                ) : (
-                    <span className="text-xs text-slate-500">?</span>
-                )}
+      <div 
+        draggable={isCreatorOrAdmin}
+        onDragStart={isCreatorOrAdmin ? handleDragStart : undefined}
+        onDragOver={isCreatorOrAdmin ? (e) => e.preventDefault() : undefined}
+        onDrop={isCreatorOrAdmin ? handleDrop : undefined}
+        className={`h-14 w-full rounded-lg flex items-center justify-between px-2 border transition-all ${isMe ? 'bg-violet-600/20 border-violet-500/50' : 'bg-slate-700/50 border-slate-600'} ${isCreatorOrAdmin ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      >
+        <div className="flex items-center gap-2 overflow-hidden w-full">
+            {isCreatorOrAdmin && <GripVertical size={16} className="text-slate-500 shrink-0" />}
+            <div className={`w-10 h-10 rounded-full bg-slate-800 border flex items-center justify-center shrink-0 relative overflow-hidden ${isReserved ? 'border-dashed border-slate-500 opacity-50' : 'border-slate-600'}`}>
+                {jobInfo ? <img src={jobInfo.icon} alt={jobInfo.name} className="w-full h-full object-cover" /> : <span className="text-xs text-slate-500">?</span>}
             </div>
             
-            <div className="flex flex-col overflow-hidden">
+            <div className="flex flex-col overflow-hidden w-full" onClick={() => isReserved && (isMe || isCreatorOrAdmin) ? onJoin() : null} style={{ cursor: isReserved ? 'pointer' : 'default' }}>
                 <span className="text-xs text-slate-400 truncate">{slot.userName}</span>
-                <span className={`text-sm font-bold truncate ${isMe ? 'text-violet-300' : jobInfo ? jobInfo.color : 'text-slate-200'}`}>
-                    {slot.charName}
-                </span>
+                {isReserved ? (
+                    <span className="text-sm font-bold truncate text-slate-500 animate-pulse">保留位 (點擊選角)</span>
+                ) : (
+                    <span className={`text-sm font-bold truncate ${isMe ? 'text-violet-300' : jobInfo ? jobInfo.color : 'text-slate-200'}`}>{slot.charName}</span>
+                )}
             </div>
         </div>
-        {(isMe || currentUser.role === 'admin') && (
-          <button onClick={onLeave} className="text-slate-500 hover:text-rose-400 p-1">
+        {(isMe || isCreatorOrAdmin) && (
+          <button onClick={onLeave} className="text-slate-500 hover:text-rose-400 p-1 shrink-0 ml-1 z-10">
             <X size={16} />
           </button>
         )}
@@ -622,17 +543,16 @@ export default function App() {
     const [selectedSlot, setSelectedSlot] = useState(null); 
 
     const handleSlotClick = (teamKey, index) => {
+        const existingSlot = party[teamKey][index];
+        if (existingSlot && existingSlot.userId !== currentUser.id && currentUser.role !== 'admin') {
+            return showToast("此位置已被保留給其他人", "error");
+        }
         if (!currentUser.characters || currentUser.characters.length === 0) {
             showToast("請先至個人頁面新增角色！", "error");
             setView('profile');
             return;
         }
         setSelectedSlot({ teamKey, index });
-    };
-
-    const confirmJoin = (charData) => {
-        handleJoinParty(party.id, selectedSlot.teamKey, selectedSlot.index, charData);
-        setSelectedSlot(null);
     };
 
     return (
@@ -645,29 +565,18 @@ export default function App() {
               </span>
               <span className="bg-blue-500/20 text-blue-300 text-xs px-2 py-0.5 rounded border border-blue-500/30 flex items-center gap-1">
                 <Activity size={12} /> {party.estimatedRuns} 場
+                {(currentUser?.id === party.creatorId || currentUser?.role === 'admin') && (
+                    <button onClick={() => handleEditRuns(party.id, party.estimatedRuns)} className="ml-1 text-slate-400 hover:text-white"><Edit2 size={10} /></button>
+                )}
               </span>
             </div>
-            <div className="text-slate-400 text-xs mt-1">
-              隊長: <span className="text-slate-300">{party.creatorName}</span>
-            </div>
+            <div className="text-slate-400 text-xs mt-1">隊長: <span className="text-slate-300">{party.creatorName}</span></div>
           </div>
           <div className="flex gap-2">
-            {(currentUser.id === party.creatorId || currentUser.role === 'admin') && (
+            {(currentUser?.id === party.creatorId || currentUser?.role === 'admin') && (
                <>
-                <button 
-                  onClick={() => handleCompleteParty(party)}
-                  className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-full transition-colors"
-                  title="標記完成"
-                >
-                    <CheckCircle size={18} />
-                </button>
-                <button 
-                  onClick={() => handleDeleteParty(party.id)}
-                  className="p-2 text-rose-400 hover:bg-rose-400/10 rounded-full transition-colors"
-                  title="刪除"
-                >
-                    <Trash2 size={18} />
-                </button>
+                <button onClick={() => handleCompleteParty(party)} className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-full" title="標記完成"><CheckCircle size={18} /></button>
+                <button onClick={() => handleDeleteParty(party.id)} className="p-2 text-rose-400 hover:bg-rose-400/10 rounded-full" title="刪除"><Trash2 size={18} /></button>
                </>
             )}
           </div>
@@ -675,65 +584,58 @@ export default function App() {
 
         <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
-             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                <Sword size={12} /> 第一小隊
-             </h4>
+             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2"><Sword size={12} /> 第一小隊</h4>
              {party.team1.map((slot, i) => (
-               <SlotButton 
-                 key={i} 
-                 slot={slot} 
-                 onJoin={() => handleSlotClick('team1', i)} 
-                 onLeave={() => handleLeaveParty(party.id, 'team1', i)} 
-               />
+               <SlotButton key={i} slot={slot} party={party} teamKey="team1" index={i} onJoin={() => handleSlotClick('team1', i)} onLeave={() => handleLeaveParty(party.id, 'team1', i)} />
              ))}
           </div>
-
           {party.isTwoTeams && (
             <div className="space-y-2 md:border-l md:border-slate-700 md:pl-4">
-               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                  <Shield size={12} /> 第二小隊
-               </h4>
+               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2"><Shield size={12} /> 第二小隊</h4>
                {party.team2.map((slot, i) => (
-                 <SlotButton 
-                    key={i} 
-                    slot={slot} 
-                    onJoin={() => handleSlotClick('team2', i)} 
-                    onLeave={() => handleLeaveParty(party.id, 'team2', i)} 
-                />
+                 <SlotButton key={i} slot={slot} party={party} teamKey="team2" index={i} onJoin={() => handleSlotClick('team2', i)} onLeave={() => handleLeaveParty(party.id, 'team2', i)} />
                ))}
             </div>
           )}
         </div>
         
         {selectedSlot && (
-            <div className="absolute inset-0 bg-slate-900/95 z-10 flex flex-col items-center justify-center p-4 animate-fade-in">
-                <h3 className="text-white mb-4 font-bold">選擇出戰角色</h3>
-                <div className="w-full max-h-60 overflow-y-auto space-y-2 mb-4 px-2">
+            <div className="absolute inset-0 bg-slate-900/95 z-20 flex flex-col items-center justify-center p-4 animate-fade-in">
+                <h3 className="text-white mb-4 font-bold text-lg">選擇出戰角色 <span className="text-xs text-slate-400 font-normal">(本週限制 4 場)</span></h3>
+                <div className="w-full max-h-64 overflow-y-auto space-y-2 mb-4 px-2">
                     {currentUser.characters.map((char, idx) => {
                         const info = getCharInfo(char);
+                        const weeklyRuns = getCharacterWeeklyRuns(info.name);
+                        const requiredRuns = parseInt(party.estimatedRuns);
+                        const isMaxedOut = (weeklyRuns + requiredRuns) > 4;
+
                         return (
                             <button 
                                 key={idx}
-                                onClick={() => confirmJoin(char)} // Pass the whole char object (or string)
-                                className="w-full p-2 bg-slate-800 hover:bg-violet-600 hover:text-white rounded-lg transition-colors flex items-center gap-3 border border-slate-700"
+                                disabled={isMaxedOut}
+                                onClick={() => {
+                                    handleJoinParty(party.id, selectedSlot.teamKey, selectedSlot.index, char);
+                                    setSelectedSlot(null);
+                                }}
+                                className={`w-full p-2 rounded-lg transition-colors flex justify-between items-center border ${isMaxedOut ? 'bg-slate-800/50 border-slate-700 opacity-50 cursor-not-allowed grayscale' : 'bg-slate-800 border-slate-600 hover:bg-violet-600 hover:border-violet-500'}`}
                             >
-                                <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-600 flex items-center justify-center overflow-hidden">
-                                     {info.icon ? <img src={info.icon} alt={info.job} className="w-full h-full object-cover"/> : <span className="text-xs text-slate-500">?</span>}
+                                <div className="flex items-center gap-3">
+                                    <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-600 flex items-center justify-center overflow-hidden">
+                                        {info.icon ? <img src={info.icon} alt={info.job} className="w-full h-full object-cover"/> : <span className="text-xs text-slate-500">?</span>}
+                                    </div>
+                                    <div className="flex flex-col items-start">
+                                        <span className="text-slate-200 text-sm font-bold">{info.name}</span>
+                                        <span className={`text-xs ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name}</span>
+                                    </div>
                                 </div>
-                                <div className="flex flex-col items-start">
-                                    <span className="text-slate-200 text-sm font-bold">{info.name}</span>
-                                    <span className={`text-xs ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name || '未知職業'}</span>
+                                <div className={`text-xs font-bold px-2 py-1 rounded ${isMaxedOut ? 'bg-rose-500/20 text-rose-400' : 'bg-slate-900 text-slate-300'}`}>
+                                    已打: {weeklyRuns}/4
                                 </div>
                             </button>
                         );
                     })}
                 </div>
-                <button 
-                    onClick={() => setSelectedSlot(null)}
-                    className="text-slate-500 hover:text-white text-sm"
-                >
-                    取消
-                </button>
+                <button onClick={() => setSelectedSlot(null)} className="text-slate-400 hover:text-white text-sm bg-slate-800 px-6 py-2 rounded-full">取消</button>
             </div>
         )}
       </GlassCard>
@@ -741,250 +643,90 @@ export default function App() {
   };
 
   // --- Main Render ---
-  
   if (view === 'auth') {
-    return (
+    return ( /* Auth View remains exactly the same */
       <div className="min-h-screen bg-[#0a0a16] flex items-center justify-center p-4 relative overflow-hidden">
         <GlobalStyles />
-        <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0">
-          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-violet-900/20 rounded-full blur-[100px] animate-breathe"></div>
-          <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-900/20 rounded-full blur-[100px] animate-breathe" style={{ animationDelay: '2s' }}></div>
-        </div>
-
-        <div className="relative z-10 w-full max-w-md">
-           <div className="text-center mb-8 animate-fade-in-down">
-              <div className="mx-auto w-16 h-16 bg-gradient-to-tr from-violet-500 to-fuchsia-500 rounded-2xl rotate-45 flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(139,92,246,0.4)]">
-                 <Sword className="text-white -rotate-45" size={32} />
-              </div>
-              <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-violet-200 to-slate-400 mb-2">
-                聖域小號系統
-              </h1>
-              <p className="text-slate-500 text-sm tracking-widest uppercase">Sanctuary Alt System</p>
-           </div>
-
-           <GlassCard className="p-8 backdrop-blur-xl bg-slate-800/60 border-slate-700/50">
-              <div className="space-y-4">
-                 <div>
-                   <label className="block text-slate-400 text-xs uppercase font-bold mb-2 text-center">使用者名稱</label>
-                   <input 
-                     type="text" 
-                     value={loginForm.name}
-                     onChange={(e) => setLoginForm({...loginForm, name: e.target.value})}
-                     className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-violet-500 transition-colors text-center"
-                     placeholder="輸入您的暱稱"
-                   />
-                 </div>
-                 <div>
-                   <label className="block text-slate-400 text-xs uppercase font-bold mb-2 text-center">4位數 PIN 碼</label>
-                   <input 
-                     type="password" 
-                     maxLength="4"
-                     value={loginForm.pin}
-                     onChange={(e) => setLoginForm({...loginForm, pin: e.target.value.replace(/\D/g, '')})}
-                     className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white focus:outline-none focus:border-violet-500 transition-colors tracking-widest text-center text-lg"
-                     placeholder="••••"
-                   />
-                   <p className="text-xs text-slate-500 mt-2 text-center">初次使用將自動註冊</p>
-                 </div>
-                 <button 
-                   onClick={handleLogin}
-                   className="w-full py-3 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-bold rounded-lg shadow-lg hover:shadow-[0_0_20px_rgba(139,92,246,0.4)] transform hover:-translate-y-1 transition-all"
-                 >
-                   進入聖域
-                 </button>
-                 {!db && (
-                    <div className="flex items-center gap-2 justify-center text-rose-400 text-xs mt-4 bg-rose-500/10 p-2 rounded">
-                        <AlertTriangle size={14} />
-                        <span>尚未連線至資料庫，請檢查程式碼設定</span>
-                    </div>
-                 )}
-              </div>
-           </GlassCard>
-        </div>
-        {toast && <Toast {...toast} onClose={() => setToast(null)} />}
+        <div className="absolute top-0 left-0 w-full h-full z-0"><div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-violet-900/20 rounded-full blur-[100px] animate-breathe"></div><div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-900/20 rounded-full blur-[100px] animate-breathe" style={{ animationDelay: '2s' }}></div></div>
+        <div className="relative z-10 w-full max-w-md"><div className="text-center mb-8 animate-fade-in-down"><div className="mx-auto w-16 h-16 bg-gradient-to-tr from-violet-500 to-fuchsia-500 rounded-2xl rotate-45 flex items-center justify-center mb-6 shadow-[0_0_30px_rgba(139,92,246,0.4)]"><Sword className="text-white -rotate-45" size={32} /></div><h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-violet-200 to-slate-400 mb-2">聖域小號系統</h1></div>
+           <GlassCard className="p-8"><div className="space-y-4">
+                 <div><input type="text" value={loginForm.name} onChange={(e) => setLoginForm({...loginForm, name: e.target.value})} className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white text-center" placeholder="輸入暱稱" /></div>
+                 <div><input type="password" maxLength="4" value={loginForm.pin} onChange={(e) => setLoginForm({...loginForm, pin: e.target.value.replace(/\D/g, '')})} className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white text-center tracking-widest text-lg" placeholder="••••" /></div>
+                 <button onClick={handleLogin} className="w-full py-3 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-bold rounded-lg shadow-lg">進入聖域</button>
+              </div></GlassCard>
+        </div>{toast && <Toast {...toast} onClose={() => setToast(null)} />}
       </div>
     );
   }
 
-  // App Layout
+  // 大廳隊伍過濾邏輯
+  const displayedParties = parties.filter(p => p.status === 'open').filter(p => {
+      if (lobbyFilter === 'all') return true;
+      const inTeam1 = p.team1.some(s => s && s.userId === currentUser.id);
+      const inTeam2 = p.team2 && p.team2.some(s => s && s.userId === currentUser.id);
+      return p.creatorId === currentUser.id || inTeam1 || inTeam2;
+  });
+
   return (
     <div className="min-h-screen bg-[#0f0f1a] text-slate-200 font-sans pb-20 relative">
       <GlobalStyles />
-      <div className="fixed inset-0 pointer-events-none z-0">
-          <div className="absolute top-[10%] right-[20%] w-[30vw] h-[30vw] bg-violet-900/10 rounded-full blur-[120px] animate-breathe"></div>
-          <div className="absolute bottom-[10%] left-[10%] w-[25vw] h-[25vw] bg-indigo-900/10 rounded-full blur-[100px] animate-breathe" style={{ animationDelay: '2.5s' }}></div>
-      </div>
-
-      {/* Header */}
       <header className="sticky top-0 z-30 bg-[#0f0f1a]/80 backdrop-blur-lg border-b border-slate-800 px-4 py-3 flex justify-between items-center">
-         <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-gradient-to-tr from-violet-600 to-fuchsia-600 rounded-lg rotate-12 flex items-center justify-center shadow-lg">
-               <Sword size={16} className="text-white -rotate-12" />
-            </div>
-            <h1 className="font-bold text-lg text-slate-100 hidden sm:block">聖域小號系統</h1>
-         </div>
-         <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 px-3 py-1 bg-slate-800 rounded-full border border-slate-700">
-               <User size={14} className="text-violet-400" />
-               <span className="text-sm font-medium">{currentUser?.name}</span>
-            </div>
-            <button 
-              onClick={() => { 
-                localStorage.removeItem('sanctuary_user_id'); // 登出時移除紀錄
-                setView('auth'); 
-                setCurrentUser(null); 
-              }}
-              className="p-2 text-slate-400 hover:text-white transition-colors"
-            >
-              <LogOut size={20} />
-            </button>
-         </div>
+         <div className="flex items-center gap-3"><div className="w-8 h-8 bg-gradient-to-tr from-violet-600 to-fuchsia-600 rounded-lg rotate-12 flex items-center justify-center"><Sword size={16} className="text-white -rotate-12" /></div><h1 className="font-bold text-lg text-slate-100">聖域小號系統</h1></div>
+         <div className="flex items-center gap-4"><div className="flex items-center gap-2 px-3 py-1 bg-slate-800 rounded-full border border-slate-700"><User size={14} className="text-violet-400" /><span className="text-sm font-medium">{currentUser?.name}</span></div><button onClick={() => { localStorage.removeItem('sanctuary_user_id'); setView('auth'); setCurrentUser(null); }} className="text-slate-400 hover:text-white"><LogOut size={20} /></button></div>
       </header>
 
-      {/* Navigation Tabs */}
       <div className="container mx-auto max-w-4xl px-4 mt-6 z-10 relative">
-        <div className="flex space-x-2 bg-slate-900/50 p-1 rounded-xl border border-slate-800 backdrop-blur-sm mb-6">
-           <button 
-             onClick={() => setView('lobby')}
-             className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-all ${view === 'lobby' ? 'bg-slate-700 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
-           >
-             <Users size={16} /> 副本大廳
-           </button>
-           <button 
-             onClick={() => setView('profile')}
-             className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-all ${view === 'profile' ? 'bg-slate-700 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
-           >
-             <Settings size={16} /> 角色管理
-           </button>
-           {currentUser?.role === 'admin' && (
-             <button 
-               onClick={() => setView('admin')}
-               className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium transition-all ${view === 'admin' ? 'bg-slate-700 text-white shadow-md' : 'text-slate-500 hover:text-slate-300'}`}
-             >
-               <Crown size={16} /> Wolf 領域
-             </button>
-           )}
+        <div className="flex space-x-2 bg-slate-900/50 p-1 rounded-xl border border-slate-800 mb-6">
+           <button onClick={() => setView('lobby')} className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium ${view === 'lobby' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}><Users size={16} /> 副本大廳</button>
+           <button onClick={() => setView('profile')} className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium ${view === 'profile' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}><Settings size={16} /> 角色管理</button>
+           {currentUser?.role === 'admin' && <button onClick={() => setView('admin')} className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium ${view === 'admin' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}><Crown size={16} /> Wolf 領域</button>}
         </div>
 
-        {/* --- View: Lobby --- */}
         {view === 'lobby' && (
           <div className="animate-fade-in space-y-6">
              <div className="flex justify-between items-center">
-                <h2 className="text-xl font-bold text-white">當前組隊</h2>
-                <button 
-                  onClick={() => setIsCreateModalOpen(true)}
-                  className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg font-bold shadow-lg shadow-violet-600/20 transition-all active:scale-95"
-                >
-                  <Plus size={18} /> 建立組隊
-                </button>
+                {/* 過濾器按鈕 */}
+                <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+                    <button onClick={() => setLobbyFilter('all')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${lobbyFilter === 'all' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-white'}`}>全部隊伍</button>
+                    <button onClick={() => setLobbyFilter('mine')} className={`px-4 py-1.5 rounded-md text-sm font-bold transition-all ${lobbyFilter === 'mine' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-white'}`}>我的隊伍</button>
+                </div>
+                <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg font-bold shadow-lg transition-all"><Plus size={18} /> 建立組隊</button>
              </div>
-             
              <div className="grid gap-6">
-                {parties.filter(p => p.status === 'open').length === 0 ? (
-                    <div className="text-center py-20 text-slate-600">
-                        <Sword size={48} className="mx-auto mb-4 opacity-20" />
-                        <p>目前沒有開放的組隊，當個隊長吧！</p>
-                    </div>
-                ) : (
-                    parties.filter(p => p.status === 'open').map(party => (
-                      <PartyCard key={party.id} party={party} />
-                    ))
-                )}
+                {displayedParties.length === 0 ? (
+                    <div className="text-center py-20 text-slate-600"><Sword size={48} className="mx-auto mb-4 opacity-20" /><p>目前沒有符合條件的組隊</p></div>
+                ) : ( displayedParties.map(party => <PartyCard key={party.id} party={party} />) )}
              </div>
           </div>
         )}
 
-        {/* --- View: Profile --- */}
         {view === 'profile' && (
           <div className="animate-fade-in">
              <GlassCard className="p-6">
-                <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                    <Settings className="text-violet-400" /> 我的角色庫
-                </h2>
-                
-                {/* Add Character Form */}
+                <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2"><Settings className="text-violet-400" /> 我的角色庫</h2>
                 <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 mb-6">
                     <h3 className="text-sm text-slate-400 mb-3 font-bold uppercase tracking-wider">新增角色</h3>
-                    <div className="flex flex-col md:flex-row gap-4">
-                        <input 
-                            type="text" 
-                            value={newCharName}
-                            onChange={(e) => setNewCharName(e.target.value)}
-                            placeholder="輸入角色名稱"
-                            className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 focus:outline-none focus:border-violet-500 text-white"
-                        />
-                        <select 
-                            value={newCharClass}
-                            onChange={(e) => setNewCharClass(e.target.value)}
-                            className="bg-slate-800 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:border-violet-500"
-                        >
-                            {CLASSES.map(cls => (
-                                <option key={cls.id} value={cls.id}>{cls.name}</option>
-                            ))}
+                    <div className="flex flex-col md:flex-row gap-3">
+                        <input type="text" value={newCharName} onChange={(e) => setNewCharName(e.target.value)} placeholder="輸入名稱 (如: FarmerWolf)" className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm" />
+                        <select value={newCharServer} onChange={(e) => setNewCharServer(e.target.value)} className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                            {SERVERS.map(srv => <option key={srv} value={srv}>{srv} 服</option>)}
                         </select>
-                        <button 
-                            onClick={handleAddCharacter}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg font-bold transition-colors shadow-lg shadow-emerald-900/20"
-                        >
-                            新增
-                        </button>
+                        <select value={newCharClass} onChange={(e) => setNewCharClass(e.target.value)} className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                            {CLASSES.map(cls => <option key={cls.id} value={cls.id}>{cls.name}</option>)}
+                        </select>
+                        <button onClick={handleAddCharacter} className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg font-bold">新增</button>
                     </div>
                 </div>
-
-                {/* Character List */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                   {(!currentUser?.characters || currentUser.characters.length === 0) && (
-                       <p className="text-slate-500 text-center py-4 col-span-2">尚未新增任何角色，快去新增吧！</p>
-                   )}
                    {currentUser?.characters?.map((char, index) => {
                       const info = getCharInfo(char);
                       return (
-                          <div key={index} className="flex justify-between items-center bg-slate-800/40 p-3 rounded-lg border border-slate-700/50 group hover:border-violet-500/30 transition-colors">
-                             {editingChar.index === index ? (
-                               <div className="flex flex-1 gap-2 items-center">
-                                 <input 
-                                    type="text" 
-                                    value={editingChar.name}
-                                    onChange={(e) => setEditingChar({ ...editingChar, name: e.target.value })}
-                                    className="flex-1 bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white text-sm"
-                                    autoFocus
-                                 />
-                                 <button onClick={handleUpdateCharacter} className="text-emerald-400 p-1 hover:bg-emerald-400/20 rounded"><Save size={16}/></button>
-                                 <button onClick={() => setEditingChar({ index: null, name: '' })} className="text-slate-400 p-1 hover:bg-slate-600 rounded"><X size={16}/></button>
-                               </div>
-                             ) : (
-                               <>
-                                 <div className="flex items-center gap-3">
-                                     <div className="w-10 h-10 rounded-full bg-slate-900 border border-slate-600 flex items-center justify-center overflow-hidden">
-                                         {info.icon ? (
-                                             <img src={info.icon} alt={info.job} className="w-full h-full object-cover" />
-                                         ) : (
-                                             <span className="text-slate-500 font-bold text-xs">?</span>
-                                         )}
-                                     </div>
-                                     <div>
-                                         <div className="font-bold text-slate-200">{info.name}</div>
-                                         <div className={`text-xs ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name || '未知職業'}</div>
-                                     </div>
-                                 </div>
-                                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button 
-                                       onClick={() => setEditingChar({ index, name: info.name })}
-                                       className="text-slate-500 hover:text-blue-400 p-2"
-                                       title="修改名稱"
-                                     >
-                                        <Edit2 size={16} />
-                                     </button>
-                                     <button 
-                                       onClick={() => handleRemoveCharacter(info.name)}
-                                       className="text-slate-500 hover:text-rose-400 p-2"
-                                       title="刪除角色"
-                                     >
-                                        <Trash2 size={16} />
-                                     </button>
-                                 </div>
-                               </>
-                             )}
+                          <div key={index} className="flex justify-between items-center bg-slate-800/40 p-3 rounded-lg border border-slate-700 group">
+                             <div className="flex items-center gap-3">
+                                 <div className="w-10 h-10 rounded-full bg-slate-900 border flex justify-center items-center overflow-hidden">{info.icon ? <img src={info.icon} className="w-full h-full object-cover" /> : '?'}</div>
+                                 <div><div className="font-bold text-slate-200 text-sm">{info.name}</div><div className={`text-xs ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name}</div></div>
+                             </div>
+                             <button onClick={() => handleRemoveCharacter(info.name)} className="text-slate-500 hover:text-rose-400 p-2"><Trash2 size={16} /></button>
                           </div>
                       );
                    })}
@@ -993,80 +735,14 @@ export default function App() {
           </div>
         )}
 
-        {/* --- View: Admin --- */}
         {view === 'admin' && currentUser?.role === 'admin' && (
           <div className="animate-fade-in space-y-8">
-             {/* System Settings */}
-             <GlassCard className="p-6 border-violet-500/30">
-                 <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                     <Globe size={20} className="text-violet-400" /> 系統設定 (Discord)
-                 </h3>
-                 <div className="space-y-4">
-                     <div>
-                         <label className="block text-xs text-slate-400 mb-1">Log Webhook URL (紀錄所有操作)</label>
-                         <input 
-                            type="password" 
-                            value={webhooks.logUrl}
-                            onChange={(e) => setWebhooks({...webhooks, logUrl: e.target.value})}
-                            className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"
-                            placeholder="https://discord.com/api/webhooks/..."
-                         />
-                     </div>
-                     <div>
-                         <label className="block text-xs text-slate-400 mb-1">Notification Webhook URL (組隊通知)</label>
-                         <input 
-                            type="password" 
-                            value={webhooks.notifyUrl}
-                            onChange={(e) => setWebhooks({...webhooks, notifyUrl: e.target.value})}
-                            className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"
-                            placeholder="https://discord.com/api/webhooks/..."
-                         />
-                     </div>
-                     <button 
-                        onClick={handleSaveWebhooks}
-                        className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded text-sm font-bold"
-                     >
-                         儲存設定
-                     </button>
-                 </div>
-             </GlassCard>
-
-             {/* Stats Section */}
-             <div className="grid grid-cols-2 gap-4">
-                <GlassCard className="p-4 flex items-center gap-4">
-                    <div className="p-3 rounded-full bg-blue-500/20 text-blue-400">
-                        <History size={24} />
-                    </div>
-                    <div>
-                        <div className="text-2xl font-bold text-white">{logs.length}</div>
-                        <div className="text-xs text-slate-400">已完成場次</div>
-                    </div>
-                </GlassCard>
-                <GlassCard className="p-4 flex items-center gap-4">
-                    <div className="p-3 rounded-full bg-fuchsia-500/20 text-fuchsia-400">
-                        <Users size={24} />
-                    </div>
-                    <div>
-                        <div className="text-2xl font-bold text-white">{users.length}</div>
-                        <div className="text-xs text-slate-400">總使用者</div>
-                    </div>
-                </GlassCard>
-             </div>
-
-             {/* User Management */}
              <GlassCard className="p-6">
-                <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                    <KeyRound size={20} className="text-rose-400" /> 使用者管理
-                </h3>
+                <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><KeyRound size={20} className="text-rose-400" /> 使用者管理</h3>
                 <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm text-slate-400">
                         <thead className="text-xs uppercase bg-slate-800/50 text-slate-300">
-                            <tr>
-                                <th className="px-4 py-3">名稱</th>
-                                <th className="px-4 py-3">密碼</th>
-                                <th className="px-4 py-3">角色數</th>
-                                <th className="px-4 py-3">操作</th>
-                            </tr>
+                            <tr><th className="px-4 py-3">名稱</th><th className="px-4 py-3">密碼</th><th className="px-4 py-3">角色數</th><th className="px-4 py-3">操作</th></tr>
                         </thead>
                         <tbody className="divide-y divide-slate-700">
                             {users.map(u => (
@@ -1074,16 +750,9 @@ export default function App() {
                                     <td className="px-4 py-3 text-white font-medium">{u.name}</td>
                                     <td className="px-4 py-3 font-mono text-violet-300">{u.pin}</td>
                                     <td className="px-4 py-3">{u.characters?.length || 0}</td>
-                                    <td className="px-4 py-3">
-                                        <button 
-                                            onClick={() => {
-                                                const newP = prompt(`為 ${u.name} 設定新密碼:`);
-                                                if(newP && newP.length === 4) handleAdminResetPin(u.id, newP);
-                                            }}
-                                            className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded"
-                                        >
-                                            重設密碼
-                                        </button>
+                                    <td className="px-4 py-3 flex gap-2">
+                                        <button onClick={() => { const newP = prompt(`新密碼:`); if(newP && newP.length === 4) updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', u.id), { pin: newP }); }} className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded">重設</button>
+                                        <button onClick={() => handleAdminDeleteUser(u)} className="flex items-center gap-1 text-xs bg-rose-900/50 hover:bg-rose-600 text-rose-200 px-2 py-1 rounded transition-colors"><UserMinus size={12}/> 刪除</button>
                                     </td>
                                 </tr>
                             ))}
@@ -1091,82 +760,49 @@ export default function App() {
                     </table>
                 </div>
              </GlassCard>
-
-             {/* Logs */}
-             <GlassCard className="p-6">
-                <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                    <CheckCircle size={20} className="text-emerald-400" /> 通關紀錄
-                </h3>
-                <div className="space-y-3">
-                    {logs.length === 0 && <p className="text-slate-500">尚無紀錄</p>}
-                    {logs.map((log, i) => (
-                        <div key={i} className="bg-slate-900/40 p-3 rounded-lg border border-slate-700/50">
-                            <div className="flex justify-between mb-2">
-                                <span className="text-emerald-400 font-bold">{formatDate(log.scheduledTime)}</span>
-                                <span className="text-slate-500 text-xs">{new Date(log.completedAt).toLocaleDateString()}</span>
-                            </div>
-                            <div className="text-sm text-slate-300 mb-2">
-                                完成場次: {log.runs} 場
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                                {log.participants.map((p, idx) => (
-                                    <span key={idx} className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700">
-                                        {p.userName} ({p.charName})
-                                    </span>
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-             </GlassCard>
           </div>
         )}
       </div>
 
-      {/* Modals */}
-      <Modal 
-        isOpen={isCreateModalOpen} 
-        onClose={() => setIsCreateModalOpen(false)} 
-        title="建立新組隊"
-      >
+      <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="建立新組隊">
          <div className="space-y-4">
             <div>
                 <label className="block text-slate-400 text-sm mb-1">預計出團時間</label>
-                <div className="relative">
-                  <input 
-                      type="datetime-local" 
-                      value={createPartyForm.time}
-                      onChange={(e) => setCreatePartyForm({...createPartyForm, time: e.target.value})}
-                      className="w-full bg-slate-800 border border-slate-600 rounded p-2 text-white focus:border-violet-500 focus:outline-none [color-scheme:dark]"
-                  />
-                </div>
+                <input type="datetime-local" value={createPartyForm.time} onChange={(e) => setCreatePartyForm({...createPartyForm, time: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded p-2 text-white [color-scheme:dark]" />
             </div>
             <div>
                 <label className="block text-slate-400 text-sm mb-1">預計場次</label>
-                <input 
-                    type="number" 
-                    min="1"
-                    value={createPartyForm.runs}
-                    onChange={(e) => setCreatePartyForm({...createPartyForm, runs: e.target.value})}
-                    className="w-full bg-slate-800 border border-slate-600 rounded p-2 text-white focus:border-violet-500 focus:outline-none"
-                />
+                <input type="number" min="1" value={createPartyForm.runs} onChange={(e) => setCreatePartyForm({...createPartyForm, runs: e.target.value})} className="w-full bg-slate-800 border border-slate-600 rounded p-2 text-white" />
             </div>
             <div className="flex items-center gap-3 pt-2">
-                <input 
-                    type="checkbox" 
-                    id="twoTeams"
-                    checked={createPartyForm.twoTeams}
-                    onChange={(e) => setCreatePartyForm({...createPartyForm, twoTeams: e.target.checked})}
-                    className="w-5 h-5 accent-violet-500 rounded cursor-pointer"
-                />
-                <label htmlFor="twoTeams" className="text-white cursor-pointer select-none">開啟第二小隊 (共8人)</label>
+                <input type="checkbox" id="twoTeams" checked={createPartyForm.twoTeams} onChange={(e) => setCreatePartyForm({...createPartyForm, twoTeams: e.target.checked})} className="w-5 h-5 accent-violet-500 rounded cursor-pointer" />
+                <label htmlFor="twoTeams" className="text-white cursor-pointer select-none">開啟第二小隊 (共 8 人)</label>
             </div>
-            <button 
-                onClick={handleCreateParty}
-                className="w-full mt-4 bg-violet-600 hover:bg-violet-500 text-white font-bold py-2 rounded-lg transition-colors"
-            >
-                發布組隊
-            </button>
+            <div className="pt-2 border-t border-slate-700">
+                <label className="block text-slate-400 text-sm mb-2 flex justify-between">
+                    <span>預先保留位置 (點擊玩家排入空位)</span>
+                    <span className="text-xs text-violet-400">{selectedReserveUsers.length} / {createPartyForm.twoTeams ? 8 : 4}</span>
+                </label>
+                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto custom-scrollbar p-1">
+                    {users.map(u => {
+                        const isSelected = selectedReserveUsers.some(r => r.id === u.id);
+                        return (
+                            <button
+                                key={u.id}
+                                onClick={() => {
+                                    if (isSelected) setSelectedReserveUsers(prev => prev.filter(r => r.id !== u.id));
+                                    else if (selectedReserveUsers.length < (createPartyForm.twoTeams ? 8 : 4)) setSelectedReserveUsers(prev => [...prev, u]);
+                                }}
+                                className={`px-2 py-1 rounded text-xs border transition-colors ${isSelected ? 'bg-violet-600 text-white border-violet-500 shadow-[0_0_10px_rgba(139,92,246,0.5)]' : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500'}`}
+                            >
+                                {u.name}
+                            </button>
+                        );
+                    })}
+                </div>
+                <p className="text-xs text-slate-500 mt-2">被選中的玩家將會在隊伍中佔據「保留位」，由他們上線後自行選擇角色。</p>
+            </div>
+            <button onClick={handleCreateParty} className="w-full mt-4 bg-violet-600 hover:bg-violet-500 text-white font-bold py-2 rounded-lg transition-colors">發布組隊</button>
          </div>
       </Modal>
 

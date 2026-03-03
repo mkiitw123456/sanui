@@ -23,15 +23,15 @@ const CLASSES = [
   { id: 'gladiator', name: '劍星', icon: 'gladiator.webp', color: 'text-sky-400' },
   { id: 'templar', name: '守護星', icon: 'templar.webp', color: 'text-blue-400' },
   { id: 'assassin', name: '殺星', icon: 'assassin.webp', color: 'text-red-400' },
-  { id: 'ranger', name: '弓星', icon: 'ranger.webp', color: 'text-emerald-400' }, // 配合需求改綠色系
+  { id: 'ranger', name: '弓星', icon: 'ranger.webp', color: 'text-emerald-400' },
   { id: 'sorcerer', name: '魔導星', icon: 'sorcerer.webp', color: 'text-violet-400' },
   { id: 'spiritmaster', name: '精靈星', icon: 'spiritmaster.webp', color: 'text-purple-400' },
-  { id: 'cleric', name: '治癒星', icon: 'cleric.webp', color: 'text-rose-400' }, // 配合需求改紅色系
-  { id: 'chanter', name: '護法星', icon: 'chanter.webp', color: 'text-rose-400' }, // 配合需求改紅色系
+  { id: 'cleric', name: '治癒星', icon: 'cleric.webp', color: 'text-rose-400' }, 
+  { id: 'chanter', name: '護法星', icon: 'chanter.webp', color: 'text-rose-400' }, 
 ];
 
 const SERVERS = ['艾萊', '伊斯拉', '普羅米', '吉凱爾', '馬庫坦', '泰萊馬科斯']; 
-const ADMIN_USERS = ['Wolf', '水野']; // 新增：定義管理員名單
+const ADMIN_USERS = ['Wolf', '水野']; 
 
 const firebaseConfig = {
   apiKey: "AIzaSyCYgTY7d4jvq-q2yj-jtlRfHRysOc-4Fc4",
@@ -129,9 +129,9 @@ const getCharBorderClass = (job, isMain) => {
     
     // 判斷職業外框 (護法/治癒=紅, 弓星=綠, 預設=灰)
     if (['cleric', 'chanter'].includes(job)) {
-        classes += 'border-rose-500 bg-rose-900/10 ';
+        classes += 'border-rose-500 ';
     } else if (job === 'ranger') {
-        classes += 'border-emerald-500 bg-emerald-900/10 ';
+        classes += 'border-emerald-500 ';
     } else {
         classes += 'border-slate-600 ';
     }
@@ -172,7 +172,7 @@ export default function App() {
   const [newCharName, setNewCharName] = useState('');
   const [newCharClass, setNewCharClass] = useState('gladiator');
   const [newCharServer, setNewCharServer] = useState(SERVERS[0]); 
-  const [newCharIsMain, setNewCharIsMain] = useState(false); // 新增：是否為本號
+  const [newCharIsMain, setNewCharIsMain] = useState(false); 
   
   const showToast = (msg, type = 'info') => setToast({ message: msg, type });
 
@@ -254,7 +254,6 @@ export default function App() {
       const storedUserId = localStorage.getItem('sanctuary_user_id');
       if (storedUserId) {
         const foundUser = users.find(u => u.id === storedUserId);
-        // 若管理員名單有更新，在此同步權限
         if (foundUser) {
             if (ADMIN_USERS.includes(foundUser.name) && foundUser.role !== 'admin') {
                 foundUser.role = 'admin';
@@ -275,7 +274,6 @@ export default function App() {
     const existingUser = users.find(u => u.name === name);
     if (existingUser) {
       if (existingUser.pin === pin) {
-        // 登入時檢查是否在管理員名單內
         let userRole = existingUser.role;
         if (ADMIN_USERS.includes(existingUser.name) && userRole !== 'admin') {
             userRole = 'admin';
@@ -299,15 +297,14 @@ export default function App() {
     }
   };
 
-  // ... (保留 handleCreateParty, handleEditRuns, handleDeleteParty, handleCompleteParty)
-  const handleCreateParty = async () => { /* 略，維持前一版 */ 
+  const handleCreateParty = async () => {
     if (!createPartyForm.time) return showToast("請選擇出團時間", "error");
     const maxSlots = createPartyForm.twoTeams ? 8 : 4;
     const initialTeam1 = Array(4).fill(null);
     const initialTeam2 = createPartyForm.twoTeams ? Array(4).fill(null) : null;
 
     selectedReserveUsers.slice(0, maxSlots).forEach((user, idx) => {
-        const slotData = { userId: user.id, userName: user.name, charName: null, charJob: null };
+        const slotData = { userId: user.id, userName: user.name, charName: null, charJob: null, isMain: false };
         if (idx < 4) initialTeam1[idx] = slotData;
         else if (initialTeam2) initialTeam2[idx - 4] = slotData;
     });
@@ -316,29 +313,27 @@ export default function App() {
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), newParty);
       setIsCreateModalOpen(false); setCreatePartyForm({ time: '', runs: '4', twoTeams: true }); setSelectedReserveUsers([]); showToast("組隊建立成功", "success");
-    } catch (e) {}
+    } catch (e) { showToast(`建立失敗: ${e.message}`, "error"); }
   };
 
-  const handleEditRuns = async (partyId, currentRuns) => { /* 略 */ 
+  const handleEditRuns = async (partyId, currentRuns) => {
     const newRuns = prompt("請輸入新的場次數量:", currentRuns);
     if (!newRuns || isNaN(newRuns) || parseInt(newRuns) <= 0) return;
-    try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { estimatedRuns: parseInt(newRuns) }); showToast("場次已更新", "success"); } catch (e) {}
+    try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { estimatedRuns: parseInt(newRuns) }); showToast("場次已更新", "success"); } catch (e) { showToast(`更新失敗: ${e.message}`, "error"); }
   };
 
-  const handleDeleteParty = async (partyId) => { /* 略 */ 
+  const handleDeleteParty = async (partyId) => {
     if (!window.confirm("確定要刪除這個組隊嗎？")) return;
-    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId)); showToast("組隊已刪除", "info"); } catch (e) {}
+    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId)); showToast("組隊已刪除", "info"); } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
 
-  const handleCompleteParty = async (party) => { /* 略 */ 
+  const handleCompleteParty = async (party) => {
     if (!window.confirm("確定標記為已完成嗎？這將會封存紀錄。")) return;
     const logEntry = { partyId: party.id, completedAt: Date.now(), scheduledTime: party.scheduledTime, runs: party.estimatedRuns, participants: [...(party.team1 || []).filter(s => s?.charName), ...(party.team2 || []).filter(s => s?.charName)] };
-    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry); await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' }); showToast("封存成功", "success"); } catch (e) {}
+    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry); await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' }); showToast("封存成功", "success"); } catch (e) { showToast(`封存失敗: ${e.message}`, "error"); }
   };
 
-
   const handleJoinParty = async (partyId, teamKey, slotIndex, charData, targetPlayerUser) => {
-    // 支援管理員幫別人排位置
     const activeUser = targetPlayerUser || currentUser; 
     const party = parties.find(p => p.id === partyId);
     if (!party) return;
@@ -354,7 +349,8 @@ export default function App() {
     }
 
     const newTeam = [...party[teamKey]];
-    newTeam[slotIndex] = { userId: activeUser.id, userName: activeUser.name, charName: charData.name, charJob: charData.job };
+    // 這裡確保將 isMain 也存入資料庫，大廳顯示時才讀得到金框
+    newTeam[slotIndex] = { userId: activeUser.id, userName: activeUser.name, charName: charData.name, charJob: charData.job, isMain: charData.isMain || false };
 
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam });
@@ -371,17 +367,17 @@ export default function App() {
     }
     const newTeam = [...party[teamKey]];
     newTeam[slotIndex] = null;
-    try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam }); } catch (e) {}
+    try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam }); } catch (e) { showToast(`操作失敗: ${e.message}`, "error"); }
   };
 
-  const handleDragDropSwap = async (partyId, sourceTeam, sourceIdx, targetTeam, targetIdx) => { /* 略 */ 
+  const handleDragDropSwap = async (partyId, sourceTeam, sourceIdx, targetTeam, targetIdx) => {
       const party = parties.find(p => p.id === partyId);
       if (!party) return;
       const newTeam1 = [...party.team1]; const newTeam2 = party.team2 ? [...party.team2] : null;
       const getSlot = (t, i) => t === 'team1' ? newTeam1[i] : newTeam2[i];
       const setSlot = (t, i, val) => t === 'team1' ? (newTeam1[i] = val) : (newTeam2[i] = val);
       const temp = getSlot(sourceTeam, sourceIdx); setSlot(sourceTeam, sourceIdx, getSlot(targetTeam, targetIdx)); setSlot(targetTeam, targetIdx, temp);
-      try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { team1: newTeam1, ...(newTeam2 && { team2: newTeam2 }) }); } catch (e) {}
+      try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { team1: newTeam1, ...(newTeam2 && { team2: newTeam2 }) }); } catch (e) { showToast("換位失敗", "error"); }
   };
 
   const handleAddCharacter = async () => {
@@ -404,6 +400,47 @@ export default function App() {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), { characters: updatedChars });
       setCurrentUser({ ...currentUser, characters: updatedChars });
     } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
+  };
+
+  // --- 管理員操作 ---
+  const handleAdminResetPin = async (userId, newPin) => {
+      if(db) {
+          try {
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { pin: newPin });
+            showToast("密碼已重設", "success");
+          } catch (e) { showToast(`重設失敗: ${e.message}`, "error"); }
+      }
+  };
+
+  const handleAdminDeleteUser = async (userToDelete) => {
+      if(!window.confirm(`確定要完全刪除 ${userToDelete.name} 嗎？這將會把他從所有開放中的組隊踢除！`)) return;
+      try {
+          for (const party of parties.filter(p => p.status === 'open')) {
+              let changed = false;
+              const cleanTeam = (team) => team.map(s => {
+                  if (s && s.userId === userToDelete.id) { changed = true; return null; }
+                  return s;
+              });
+              const newTeam1 = cleanTeam(party.team1);
+              const newTeam2 = party.team2 ? cleanTeam(party.team2) : null;
+              if (changed) {
+                  await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), {
+                      team1: newTeam1, ...(newTeam2 && { team2: newTeam2 })
+                  });
+              }
+          }
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userToDelete.id));
+          showToast(`${userToDelete.name} 已被完全刪除`, "success");
+      } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
+  };
+
+  const handleSaveWebhooks = async () => {
+      if(db) {
+          try {
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), webhooks);
+            showToast("Webhook 設定已儲存", "success");
+          } catch (e) { showToast(`儲存失敗: ${e.message}`, "error"); }
+      }
   };
 
   // --- Sub-Components ---
@@ -436,7 +473,7 @@ export default function App() {
     return (
       <div 
         draggable={isCreatorOrAdmin} onDragStart={isCreatorOrAdmin ? handleDragStart : undefined} onDragOver={isCreatorOrAdmin ? (e) => e.preventDefault() : undefined} onDrop={isCreatorOrAdmin ? handleDrop : undefined}
-        className={`h-14 w-full rounded-lg flex items-center justify-between px-2 transition-all ${isMe && !isReserved ? 'bg-violet-600/20 ' : 'bg-slate-800 '} ${isCreatorOrAdmin ? 'cursor-grab active:cursor-grabbing ' : ''} ${getCharBorderClass(slot.charJob, false)}`} // 這裡套用邊框樣式，大廳只套用顏色，若需判斷本號可加入
+        className={`h-14 w-full rounded-lg flex items-center justify-between px-2 transition-all ${isMe && !isReserved ? 'bg-violet-600/20 ' : 'bg-slate-800/60 '} ${isCreatorOrAdmin ? 'cursor-grab active:cursor-grabbing ' : ''} ${getCharBorderClass(slot.charJob, slot.isMain)}`}
       >
         <div className="flex items-center gap-2 overflow-hidden w-full">
             {isCreatorOrAdmin && <GripVertical size={16} className="text-slate-500 shrink-0" />}
@@ -449,7 +486,9 @@ export default function App() {
                 {isReserved ? (
                     <span className="text-sm font-bold truncate text-slate-500 animate-pulse">保留位 (點擊選角)</span>
                 ) : (
-                    <span className={`text-sm font-bold truncate ${isMe ? 'text-violet-300' : jobInfo ? jobInfo.color : 'text-slate-200'}`}>{slot.charName}</span>
+                    <span className={`text-sm font-bold truncate flex items-center gap-1 ${isMe ? 'text-violet-300' : jobInfo ? jobInfo.color : 'text-slate-200'}`}>
+                        {slot.charName} {slot.isMain && <Star size={10} className="text-amber-400 fill-amber-400 flex-shrink-0"/>}
+                    </span>
                 )}
             </div>
         </div>
@@ -464,21 +503,18 @@ export default function App() {
 
   const PartyCard = ({ party }) => {
     const [selectedSlot, setSelectedSlot] = useState(null); 
-    const [adminStep, setAdminStep] = useState('selectChar'); // 'selectUser' 或 'selectChar'
+    const [adminStep, setAdminStep] = useState('selectChar'); 
     const [targetPlayer, setTargetPlayer] = useState(null);
 
     const handleSlotClick = (teamKey, index) => {
         const existingSlot = party[teamKey][index];
-        // 如果這個位置不是自己的，且自己不是管理員，不可點擊
         if (existingSlot && existingSlot.userId !== currentUser.id && currentUser.role !== 'admin' && currentUser.id !== party.creatorId) {
             return showToast("此位置無法操作", "error");
         }
         
         setSelectedSlot({ teamKey, index });
         
-        // 如果是管理員，開啟選人流程
         if (currentUser.role === 'admin') {
-            // 若該位置已經有人(保留位或已選角)，預設選擇該玩家；若為空位，進入「選玩家」畫面
             if (existingSlot && existingSlot.userId) {
                 const p = users.find(u => u.id === existingSlot.userId);
                 setTargetPlayer(p || currentUser);
@@ -488,7 +524,6 @@ export default function App() {
                 setAdminStep('selectUser');
             }
         } else {
-            // 一般玩家直接選自己的角色
             setTargetPlayer(currentUser);
             setAdminStep('selectChar');
         }
@@ -529,7 +564,6 @@ export default function App() {
           )}
         </div>
         
-        {/* 選角/選人 Overlay */}
         {selectedSlot && (
             <div className="absolute inset-0 bg-slate-900/95 z-20 flex flex-col items-center justify-center p-4 animate-fade-in">
                 {currentUser.role === 'admin' && adminStep === 'selectUser' && (
@@ -597,7 +631,7 @@ export default function App() {
   };
 
   // --- Main Render ---
-  if (view === 'auth') { /* 登入頁面不變 */
+  if (view === 'auth') { 
     return (
       <div className="min-h-screen bg-[#0a0a16] flex items-center justify-center p-4 relative overflow-hidden">
         <GlobalStyles /><div className="absolute top-0 left-0 w-full h-full z-0"><div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-violet-900/20 rounded-full blur-[100px] animate-breathe"></div></div>
@@ -634,7 +668,7 @@ export default function App() {
            {currentUser?.role === 'admin' && <button onClick={() => setView('admin')} className={`flex-1 py-2 rounded-lg flex items-center justify-center gap-2 text-sm font-medium ${view === 'admin' ? 'bg-slate-700 text-white' : 'text-slate-500'}`}><Crown size={16} /> 管理員領域</button>}
         </div>
 
-        {view === 'lobby' && ( /* 副本大廳區塊維持 */
+        {view === 'lobby' && ( 
           <div className="animate-fade-in space-y-6">
              <div className="flex justify-between items-center">
                 <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
@@ -651,7 +685,6 @@ export default function App() {
 
         {view === 'profile' && (
           <div className="animate-fade-in space-y-6">
-             {/* 我的角色區塊 */}
              <GlassCard className="p-6">
                 <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2"><Settings className="text-violet-400" /> 我的專屬角色庫</h2>
                 <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 mb-6">
@@ -687,7 +720,6 @@ export default function App() {
                 </div>
              </GlassCard>
 
-             {/* 其他玩家的區塊 (唯讀) */}
              <div className="space-y-4 pt-4 border-t border-slate-800">
                 <h2 className="text-lg font-bold text-slate-400 px-2 flex items-center gap-2"><Globe size={18} /> 全伺服器玩家角色</h2>
                 {users.filter(u => u.id !== currentUser.id).map(user => (
@@ -717,17 +749,67 @@ export default function App() {
           </div>
         )}
 
-        {view === 'admin' && currentUser?.role === 'admin' && ( /* 管理員頁面不變 */
+        {view === 'admin' && currentUser?.role === 'admin' && ( 
           <div className="animate-fade-in space-y-8">
+             {/* System Settings */}
+             <GlassCard className="p-6 border-violet-500/30">
+                 <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                     <Globe size={20} className="text-violet-400" /> 系統設定 (Discord)
+                 </h3>
+                 <div className="space-y-4">
+                     <div>
+                         <label className="block text-xs text-slate-400 mb-1">Log Webhook URL (紀錄所有操作)</label>
+                         <input type="password" value={webhooks.logUrl} onChange={(e) => setWebhooks({...webhooks, logUrl: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm" placeholder="https://discord.com/api/webhooks/..." />
+                     </div>
+                     <div>
+                         <label className="block text-xs text-slate-400 mb-1">Notification Webhook URL (組隊通知)</label>
+                         <input type="password" value={webhooks.notifyUrl} onChange={(e) => setWebhooks({...webhooks, notifyUrl: e.target.value})} className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm" placeholder="https://discord.com/api/webhooks/..." />
+                     </div>
+                     <button onClick={handleSaveWebhooks} className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded text-sm font-bold">儲存設定</button>
+                 </div>
+             </GlassCard>
+
+             {/* Stats Section */}
+             <div className="grid grid-cols-2 gap-4">
+                <GlassCard className="p-4 flex items-center gap-4">
+                    <div className="p-3 rounded-full bg-blue-500/20 text-blue-400"><History size={24} /></div>
+                    <div><div className="text-2xl font-bold text-white">{logs.length}</div><div className="text-xs text-slate-400">已完成場次</div></div>
+                </GlassCard>
+                <GlassCard className="p-4 flex items-center gap-4">
+                    <div className="p-3 rounded-full bg-fuchsia-500/20 text-fuchsia-400"><Users size={24} /></div>
+                    <div><div className="text-2xl font-bold text-white">{users.length}</div><div className="text-xs text-slate-400">總使用者</div></div>
+                </GlassCard>
+             </div>
+
+             {/* User Management */}
              <GlassCard className="p-6">
                 <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><KeyRound size={20} className="text-rose-400" /> 使用者管理</h3>
-                {/* 表格... */}
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-400">
+                        <thead className="text-xs uppercase bg-slate-800/50 text-slate-300">
+                            <tr><th className="px-4 py-3">名稱</th><th className="px-4 py-3">密碼</th><th className="px-4 py-3">角色數</th><th className="px-4 py-3">操作</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-700">
+                            {users.map(u => (
+                                <tr key={u.id} className="hover:bg-slate-800/30">
+                                    <td className="px-4 py-3 text-white font-medium">{u.name}</td>
+                                    <td className="px-4 py-3 font-mono text-violet-300">{u.pin}</td>
+                                    <td className="px-4 py-3">{u.characters?.length || 0}</td>
+                                    <td className="px-4 py-3 flex gap-2">
+                                        <button onClick={() => { const newP = prompt(`新密碼:`); if(newP && newP.length === 4) handleAdminResetPin(u.id, newP); }} className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded">重設密碼</button>
+                                        <button onClick={() => handleAdminDeleteUser(u)} className="flex items-center gap-1 text-xs bg-rose-900/50 hover:bg-rose-600 text-rose-200 px-2 py-1 rounded transition-colors"><UserMinus size={12}/> 刪除</button>
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
              </GlassCard>
           </div>
         )}
       </div>
 
-<Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="建立新組隊">
+      <Modal isOpen={isCreateModalOpen} onClose={() => setIsCreateModalOpen(false)} title="建立新組隊">
          <div className="space-y-4">
             <div>
                 <label className="block text-slate-400 text-sm mb-1">預計出團時間</label>

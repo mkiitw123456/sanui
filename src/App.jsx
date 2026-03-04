@@ -30,7 +30,7 @@ const CLASSES = [
   { id: 'chanter', name: '護法星', icon: 'chanter.webp', color: 'text-rose-400' }, 
 ];
 
-const SERVERS = ['艾萊', '伊斯拉', '普羅米', '吉凱爾', '馬庫坦', '泰萊馬科斯']; 
+const SERVERS = ['艾萊', '吉凱', '崔妮', '奎靈']; 
 const ADMIN_USERS = ['Wolf', '水野']; 
 
 const firebaseConfig = {

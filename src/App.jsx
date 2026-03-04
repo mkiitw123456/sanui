@@ -3,7 +3,7 @@ import {
   Users, Sword, Shield, Plus, Trash2, LogOut, 
   Settings, User, Calendar, CheckCircle, XCircle, 
   X, Crown, Activity, History, KeyRound, Edit2, Save,
-  Globe, AlertTriangle, GripVertical, UserMinus, Star
+  Globe, AlertTriangle, GripVertical, UserMinus, Star, Copy
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -30,7 +30,6 @@ const CLASSES = [
   { id: 'chanter', name: '護法星', icon: 'chanter.webp', color: 'text-rose-400' }, 
 ];
 
-const SERVERS = ['艾萊', '吉凱', '崔妮', '奎靈']; 
 const ADMIN_USERS = ['Wolf', '水野']; 
 
 const firebaseConfig = {
@@ -77,7 +76,7 @@ const GlobalStyles = () => (
 
 const Toast = ({ message, type, onClose }) => {
   useEffect(() => {
-    const timer = setTimeout(onClose, 5000);
+    const timer = setTimeout(onClose, 3000);
     return () => clearTimeout(timer);
   }, [onClose]);
 
@@ -154,7 +153,10 @@ export default function App() {
   const [authUser, setAuthUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
+  
   const [webhooks, setWebhooks] = useState({ logUrl: '', notifyUrl: '' });
+  const [servers, setServers] = useState([]); // 從 Firebase 動態讀取
+  const [newServerName, setNewServerName] = useState(''); // 管理員新增伺服器用的狀態
   
   const [users, setUsers] = useState([]);
   const [parties, setParties] = useState([]);
@@ -171,10 +173,17 @@ export default function App() {
   
   const [newCharName, setNewCharName] = useState('');
   const [newCharClass, setNewCharClass] = useState('gladiator');
-  const [newCharServer, setNewCharServer] = useState(SERVERS[0]); 
+  const [newCharServer, setNewCharServer] = useState(''); 
   const [newCharIsMain, setNewCharIsMain] = useState(false); 
   
   const showToast = (msg, type = 'info') => setToast({ message: msg, type });
+
+  // 確保伺服器選單預設值
+  useEffect(() => {
+      if (servers.length > 0 && !servers.includes(newCharServer)) {
+          setNewCharServer(servers[0]);
+      }
+  }, [servers]);
 
   const formatDate = (dateString) => {
     if (!dateString) return '未定';
@@ -235,7 +244,15 @@ export default function App() {
 
   useEffect(() => {
     if (auth && authUser) {
-      const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'settings'), (docSnap) => { if (docSnap.exists()) setWebhooks(docSnap.data()); });
+      const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'settings'), (docSnap) => { 
+          if (docSnap.exists()) {
+              const data = docSnap.data();
+              setWebhooks({ logUrl: data.logUrl || '', notifyUrl: data.notifyUrl || '' });
+              setServers(data.servers && Array.isArray(data.servers) ? data.servers : ['艾萊', '伊斯拉']); // 若無資料，給予預設
+          } else {
+              setServers(['艾萊', '伊斯拉']);
+          }
+      });
       const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => { setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() }))); });
       const unsubParties = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), (snap) => {
         const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -349,7 +366,6 @@ export default function App() {
     }
 
     const newTeam = [...party[teamKey]];
-    // 這裡確保將 isMain 也存入資料庫，大廳顯示時才讀得到金框
     newTeam[slotIndex] = { userId: activeUser.id, userName: activeUser.name, charName: charData.name, charJob: charData.job, isMain: charData.isMain || false };
 
     try {
@@ -382,6 +398,7 @@ export default function App() {
 
   const handleAddCharacter = async () => {
     if (!newCharName.trim()) return;
+    if (!newCharServer) return showToast("請先選擇伺服器", "error");
     const fullName = `${newCharName.trim()}[${newCharServer}]`;
     const newCharObj = { name: fullName, job: newCharClass, isMain: newCharIsMain };
     const updatedChars = [...(currentUser.characters || []), newCharObj];
@@ -437,10 +454,29 @@ export default function App() {
   const handleSaveWebhooks = async () => {
       if(db) {
           try {
-            await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), webhooks);
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), { ...webhooks, servers: servers }, { merge: true });
             showToast("Webhook 設定已儲存", "success");
           } catch (e) { showToast(`儲存失敗: ${e.message}`, "error"); }
       }
+  };
+
+  const handleAddServer = async () => {
+      if (!newServerName.trim()) return;
+      const updatedServers = [...servers, newServerName.trim()];
+      try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), { servers: updatedServers }, { merge: true });
+          setNewServerName('');
+          showToast("伺服器已新增", "success");
+      } catch (e) { showToast(`新增伺服器失敗: ${e.message}`, "error"); }
+  };
+
+  const handleRemoveServer = async (srvToRemove) => {
+      if (!window.confirm(`確定要移除 ${srvToRemove} 伺服器嗎？`)) return;
+      const updatedServers = servers.filter(s => s !== srvToRemove);
+      try {
+          await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), { servers: updatedServers }, { merge: true });
+          showToast("伺服器已移除", "success");
+      } catch (e) { showToast(`移除伺服器失敗: ${e.message}`, "error"); }
   };
 
   // --- Sub-Components ---
@@ -493,9 +529,24 @@ export default function App() {
             </div>
         </div>
         {(isMe || isCreatorOrAdmin) && (
-          <button onClick={onLeave} className="text-slate-500 hover:text-rose-400 p-1 shrink-0 ml-1 z-10">
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
+            {!isReserved && slot.charName && (
+                <button 
+                  onClick={(e) => { 
+                      e.stopPropagation(); 
+                      navigator.clipboard.writeText(slot.charName); 
+                      showToast("已複製角色名稱", "success"); 
+                  }} 
+                  className="text-slate-500 hover:text-emerald-400 p-1"
+                  title="複製角色名稱"
+                >
+                  <Copy size={16} />
+                </button>
+            )}
+            <button onClick={onLeave} className="text-slate-500 hover:text-rose-400 p-1" title="踢除/離開">
+              <X size={16} />
+            </button>
+          </div>
         )}
       </div>
     );
@@ -569,7 +620,7 @@ export default function App() {
                 {currentUser.role === 'admin' && adminStep === 'selectUser' && (
                     <>
                         <h3 className="text-white mb-4 font-bold text-lg">選擇要指派的玩家</h3>
-                        <div className="w-full max-h-64 overflow-y-auto space-y-2 mb-4 px-2 custom-scrollbar">
+                        <div className="w-full max-h-64 overflow-y-auto space-y-2 mb-4 p-2 custom-scrollbar">
                             {users.map(u => (
                                 <button key={u.id} onClick={() => { setTargetPlayer(u); setAdminStep('selectChar'); }} className="w-full p-2 bg-slate-800 border border-slate-600 rounded-lg hover:bg-violet-600 text-left text-white font-bold transition-colors">
                                     {u.name}
@@ -586,7 +637,8 @@ export default function App() {
                             為 {targetPlayer.name} 選擇出戰角色
                         </h3>
                         <p className="text-xs text-slate-400 mb-4">本週限制 4 場</p>
-                        <div className="w-full max-h-60 overflow-y-auto space-y-2 mb-4 px-2 custom-scrollbar">
+                        {/* 修正金框裁切的問題：將 px-2 改成 p-2，並加大了 space-y-3 來保留擴張空間 */}
+                        <div className="w-full max-h-60 overflow-y-auto space-y-3 mb-4 p-2 custom-scrollbar">
                             {(!targetPlayer.characters || targetPlayer.characters.length === 0) && (
                                 <div className="text-slate-500 text-center py-4">這位玩家還沒有建立任何角色</div>
                             )}
@@ -692,7 +744,7 @@ export default function App() {
                     <div className="flex flex-col md:flex-row gap-3">
                         <input type="text" value={newCharName} onChange={(e) => setNewCharName(e.target.value)} placeholder="角色名稱" className="flex-1 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm" />
                         <select value={newCharServer} onChange={(e) => setNewCharServer(e.target.value)} className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm w-full md:w-auto">
-                            {SERVERS.map(srv => <option key={srv} value={srv}>{srv} 服</option>)}
+                            {servers.map(srv => <option key={srv} value={srv}>{srv} 服</option>)}
                         </select>
                         <select value={newCharClass} onChange={(e) => setNewCharClass(e.target.value)} className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm w-full md:w-auto">
                             {CLASSES.map(cls => <option key={cls.id} value={cls.id}>{cls.name}</option>)}
@@ -751,10 +803,44 @@ export default function App() {
 
         {view === 'admin' && currentUser?.role === 'admin' && ( 
           <div className="animate-fade-in space-y-8">
+             
+             {/* 伺服器管理 */}
+             <GlassCard className="p-6 border-emerald-500/30">
+                 <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                     <Globe size={20} className="text-emerald-400" /> 伺服器管理
+                 </h3>
+                 <div className="flex gap-2 mb-4">
+                     <input 
+                         type="text" 
+                         value={newServerName}
+                         onChange={(e) => setNewServerName(e.target.value)}
+                         className="flex-1 bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"
+                         placeholder="輸入新伺服器名稱 (例如: 艾萊)" 
+                     />
+                     <button 
+                         onClick={handleAddServer}
+                         className="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded text-sm font-bold"
+                     >
+                         新增
+                     </button>
+                 </div>
+                 <div className="flex flex-wrap gap-2">
+                     {servers.length === 0 && <span className="text-slate-500 text-sm">尚未設定伺服器</span>}
+                     {servers.map(srv => (
+                         <div key={srv} className="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded px-3 py-1 text-sm text-slate-300">
+                             {srv}
+                             <button onClick={() => handleRemoveServer(srv)} className="text-slate-500 hover:text-rose-400 ml-1">
+                                 <X size={14} />
+                             </button>
+                         </div>
+                     ))}
+                 </div>
+             </GlassCard>
+
              {/* System Settings */}
              <GlassCard className="p-6 border-violet-500/30">
                  <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                     <Globe size={20} className="text-violet-400" /> 系統設定 (Discord)
+                     <Settings size={20} className="text-violet-400" /> 系統設定 (Discord)
                  </h3>
                  <div className="space-y-4">
                      <div>

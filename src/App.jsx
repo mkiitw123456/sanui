@@ -3,7 +3,7 @@ import {
   Users, Sword, Shield, Plus, Trash2, LogOut, 
   Settings, User, Calendar, CheckCircle, XCircle, 
   X, Crown, Activity, History, KeyRound, Edit2, Save,
-  Globe, AlertTriangle, GripVertical, UserMinus, Star, Copy
+  Globe, AlertTriangle, GripVertical, UserMinus, Star, Copy, Bell
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -125,8 +125,6 @@ const GlassCard = ({ children, className = "" }) => (
 // --- 取得外框樣式的輔助函數 ---
 const getCharBorderClass = (job, isMain) => {
     let classes = 'border ';
-    
-    // 判斷職業外框 (護法/治癒=紅, 弓星=綠, 預設=灰)
     if (['cleric', 'chanter'].includes(job)) {
         classes += 'border-rose-500 ';
     } else if (job === 'ranger') {
@@ -134,12 +132,9 @@ const getCharBorderClass = (job, isMain) => {
     } else {
         classes += 'border-slate-600 ';
     }
-
-    // 判斷本號 (金色光環 Ring)
     if (isMain) {
         classes += 'ring-2 ring-amber-400 ring-offset-2 ring-offset-slate-900 shadow-[0_0_10px_rgba(251,191,36,0.3)] ';
     }
-    
     return classes;
 };
 
@@ -155,8 +150,8 @@ export default function App() {
   const [toast, setToast] = useState(null);
   
   const [webhooks, setWebhooks] = useState({ logUrl: '', notifyUrl: '' });
-  const [servers, setServers] = useState([]); // 從 Firebase 動態讀取
-  const [newServerName, setNewServerName] = useState(''); // 管理員新增伺服器用的狀態
+  const [servers, setServers] = useState([]); 
+  const [newServerName, setNewServerName] = useState(''); 
   
   const [users, setUsers] = useState([]);
   const [parties, setParties] = useState([]);
@@ -178,7 +173,6 @@ export default function App() {
   
   const showToast = (msg, type = 'info') => setToast({ message: msg, type });
 
-  // 確保伺服器選單預設值
   useEffect(() => {
       if (servers.length > 0 && !servers.includes(newCharServer)) {
           setNewCharServer(servers[0]);
@@ -223,13 +217,87 @@ export default function App() {
     return runs;
   };
 
-  const sendDiscord = async (type, content) => {
-    const url = type === 'notify' ? webhooks.notifyUrl : webhooks.logUrl;
+  // --- Discord Webhook 邏輯 ---
+  const sendDiscordLog = async (msg) => {
+    const url = webhooks.logUrl;
     if (!url || !url.startsWith('http')) return;
-    try { await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: content, username: "聖域系統" }) }); } catch (e) { }
+    try { 
+        await fetch(url, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ content: `[系統日誌] ${new Date().toLocaleTimeString()} - ${msg}`, username: "聖域紀錄員" }) 
+        }); 
+    } catch (e) { }
   };
-  const logAction = (msg) => sendDiscord('log', `[LOG] ${new Date().toLocaleTimeString()} - ${msg}`);
-  const notifyAction = (msg) => sendDiscord('notify', `📣 **聖域快訊**\n${msg}`);
+  const logAction = (msg) => sendDiscordLog(msg);
+
+  // 🔔 [核心新增] Discord 出團提醒 (排版 Embed)
+  const handleNotifyParty = async (party) => {
+      if (!webhooks.notifyUrl || !webhooks.notifyUrl.startsWith('http')) {
+          return showToast("請先在管理員領域設定 Notification Webhook URL", "error");
+      }
+
+      let pings = []; // 收集所有要 Tag 的人
+
+      const formatTeam = (team) => {
+          if (!team || team.length === 0) return "無";
+          return team.map((slot) => {
+              if (!slot) return `> \`[空位]\` 等待加入...`;
+              const u = users.find(user => user.id === slot.userId);
+              let mention = slot.userName;
+              
+              // 如果有綁定 Discord ID，就轉換成 Tag 格式
+              if (u && u.discordId) {
+                  mention = `<@${u.discordId}>`;
+                  pings.push(mention); // 加入待 Tag 列表
+              }
+              
+              const charDisplay = slot.charName 
+                  ? `**${slot.charName}** (${CLASSES.find(c=>c.id === slot.charJob)?.name || '未知'})` 
+                  : '*保留位 (尚未選角)*';
+              
+              return `> ${mention} ➔ ${charDisplay}`;
+          }).join('\n');
+      };
+
+      const team1Field = formatTeam(party.team1);
+      const team2Field = party.isTwoTeams ? formatTeam(party.team2) : null;
+
+      // 確保 Tag 不重複
+      const uniquePings = [...new Set(pings)].join(' ');
+
+      const payload = {
+          content: `🔔 **準備出團囉！** ${uniquePings}`,
+          embeds: [{
+              title: "⚔️ 聖域組隊集結通知",
+              description: `隊長 **${party.creatorName}** 發起了出團點名，請各位準備上線囉！`,
+              color: 9062319, // 夢幻紫
+              fields: [
+                  { name: "📅 開團時間", value: formatDate(party.scheduledTime), inline: true },
+                  { name: "🔄 預計場次", value: `${party.estimatedRuns} 場`, inline: true },
+                  { name: " ", value: " ", inline: false }, // 空行排版用
+                  { name: "🛡️ 第一小隊", value: team1Field, inline: false }
+              ]
+          }]
+      };
+
+      if (team2Field) {
+          payload.embeds[0].fields.push({ name: "🛡️ 第二小隊", value: team2Field, inline: false });
+      }
+
+      try {
+          await fetch(webhooks.notifyUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+          });
+          showToast("已發送 Discord 提醒！", "success");
+          logAction(`發送組隊提醒: 隊長 ${party.creatorName} (Party ID: ${party.id})`);
+      } catch (e) {
+          showToast("發送 Discord 失敗，請檢查網址", "error");
+      }
+  };
+
 
   useEffect(() => {
     const initAuth = async () => {
@@ -248,7 +316,7 @@ export default function App() {
           if (docSnap.exists()) {
               const data = docSnap.data();
               setWebhooks({ logUrl: data.logUrl || '', notifyUrl: data.notifyUrl || '' });
-              setServers(data.servers && Array.isArray(data.servers) ? data.servers : ['艾萊', '伊斯拉']); // 若無資料，給予預設
+              setServers(data.servers && Array.isArray(data.servers) ? data.servers : ['艾萊', '伊斯拉']); 
           } else {
               setServers(['艾萊', '伊斯拉']);
           }
@@ -301,7 +369,11 @@ export default function App() {
         localStorage.setItem('sanctuary_user_id', existingUser.id);
         setView('lobby');
         showToast(`歡迎回來，${name}`, "success");
-      } else { showToast("密碼錯誤", "error"); }
+        logAction(`使用者登入: ${name}`);
+      } else { 
+          showToast("密碼錯誤", "error"); 
+          logAction(`登入失敗 (密碼錯誤): ${name}`);
+      }
     } else {
       const newUser = { name, pin, role: ADMIN_USERS.includes(name) ? 'admin' : 'user', characters: [], createdAt: Date.now() };
       try {
@@ -310,6 +382,7 @@ export default function App() {
         localStorage.setItem('sanctuary_user_id', docRef.id);
         setView('lobby');
         showToast("註冊成功！", "success");
+        logAction(`新使用者註冊: ${name}`);
       } catch (e) { showToast(`註冊失敗: ${e.message}`, "error"); }
     }
   };
@@ -329,25 +402,40 @@ export default function App() {
     const newParty = { creatorId: currentUser.id, creatorName: currentUser.name, createdAt: Date.now(), scheduledTime: createPartyForm.time, estimatedRuns: parseInt(createPartyForm.runs) || 1, status: 'open', isTwoTeams: createPartyForm.twoTeams, team1: initialTeam1, team2: initialTeam2 };
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), newParty);
-      setIsCreateModalOpen(false); setCreatePartyForm({ time: '', runs: '4', twoTeams: true }); setSelectedReserveUsers([]); showToast("組隊建立成功", "success");
+      setIsCreateModalOpen(false); setCreatePartyForm({ time: '', runs: '4', twoTeams: true }); setSelectedReserveUsers([]); 
+      showToast("組隊建立成功", "success");
+      logAction(`建立新組隊: by ${currentUser.name}, 時間: ${formatDate(createPartyForm.time)}, 場次: ${createPartyForm.runs}`);
     } catch (e) { showToast(`建立失敗: ${e.message}`, "error"); }
   };
 
   const handleEditRuns = async (partyId, currentRuns) => {
     const newRuns = prompt("請輸入新的場次數量:", currentRuns);
     if (!newRuns || isNaN(newRuns) || parseInt(newRuns) <= 0) return;
-    try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { estimatedRuns: parseInt(newRuns) }); showToast("場次已更新", "success"); } catch (e) { showToast(`更新失敗: ${e.message}`, "error"); }
+    try { 
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { estimatedRuns: parseInt(newRuns) }); 
+        showToast("場次已更新", "success"); 
+        logAction(`更新場次: Party ID ${partyId} 修改為 ${newRuns} 場`);
+    } catch (e) { showToast(`更新失敗: ${e.message}`, "error"); }
   };
 
   const handleDeleteParty = async (partyId) => {
     if (!window.confirm("確定要刪除這個組隊嗎？")) return;
-    try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId)); showToast("組隊已刪除", "info"); } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
+    try { 
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId)); 
+        showToast("組隊已刪除", "info"); 
+        logAction(`刪除組隊: Party ID ${partyId} by ${currentUser.name}`);
+    } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
 
   const handleCompleteParty = async (party) => {
     if (!window.confirm("確定標記為已完成嗎？這將會封存紀錄。")) return;
     const logEntry = { partyId: party.id, completedAt: Date.now(), scheduledTime: party.scheduledTime, runs: party.estimatedRuns, participants: [...(party.team1 || []).filter(s => s?.charName), ...(party.team2 || []).filter(s => s?.charName)] };
-    try { await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry); await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' }); showToast("封存成功", "success"); } catch (e) { showToast(`封存失敗: ${e.message}`, "error"); }
+    try { 
+        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry); 
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' }); 
+        showToast("封存成功", "success"); 
+        logAction(`✅ 完成組隊: Party ID ${party.id} 標記完成`);
+    } catch (e) { showToast(`封存失敗: ${e.message}`, "error"); }
   };
 
   const handleJoinParty = async (partyId, teamKey, slotIndex, charData, targetPlayerUser) => {
@@ -371,6 +459,7 @@ export default function App() {
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam });
       showToast(`${activeUser.name} 加入成功！`, "success");
+      logAction(`加入位置: ${activeUser.name} (${charData.name}) 加入了 Party ID ${partyId}`);
     } catch (e) { showToast(`加入失敗: ${e.message}`, "error"); }
   };
 
@@ -383,7 +472,10 @@ export default function App() {
     }
     const newTeam = [...party[teamKey]];
     newTeam[slotIndex] = null;
-    try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam }); } catch (e) { showToast(`操作失敗: ${e.message}`, "error"); }
+    try { 
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { [teamKey]: newTeam }); 
+        logAction(`離開/踢除: ${slot.userName} 離開了 Party ID ${partyId}`);
+    } catch (e) { showToast(`操作失敗: ${e.message}`, "error"); }
   };
 
   const handleDragDropSwap = async (partyId, sourceTeam, sourceIdx, targetTeam, targetIdx) => {
@@ -393,7 +485,10 @@ export default function App() {
       const getSlot = (t, i) => t === 'team1' ? newTeam1[i] : newTeam2[i];
       const setSlot = (t, i, val) => t === 'team1' ? (newTeam1[i] = val) : (newTeam2[i] = val);
       const temp = getSlot(sourceTeam, sourceIdx); setSlot(sourceTeam, sourceIdx, getSlot(targetTeam, targetIdx)); setSlot(targetTeam, targetIdx, temp);
-      try { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { team1: newTeam1, ...(newTeam2 && { team2: newTeam2 }) }); } catch (e) { showToast("換位失敗", "error"); }
+      try { 
+          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', partyId), { team1: newTeam1, ...(newTeam2 && { team2: newTeam2 }) }); 
+          logAction(`位置調換: Party ID ${partyId} 發生換位`);
+      } catch (e) { showToast("換位失敗", "error"); }
   };
 
   const handleAddCharacter = async () => {
@@ -407,6 +502,7 @@ export default function App() {
       setCurrentUser({ ...currentUser, characters: updatedChars });
       setNewCharName('');
       showToast("角色已新增", "success");
+      logAction(`新增角色: ${currentUser.name} 增加了 ${fullName}`);
     } catch (e) { showToast(`新增失敗: ${e.message}`, "error"); }
   };
 
@@ -416,6 +512,7 @@ export default function App() {
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), { characters: updatedChars });
       setCurrentUser({ ...currentUser, characters: updatedChars });
+      logAction(`刪除角色: ${currentUser.name} 刪除了 ${charName}`);
     } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
 
@@ -425,7 +522,18 @@ export default function App() {
           try {
             await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { pin: newPin });
             showToast("密碼已重設", "success");
+            logAction(`管理員操作: 重設了 User ID ${userId} 的密碼`);
           } catch (e) { showToast(`重設失敗: ${e.message}`, "error"); }
+      }
+  };
+
+  const handleAdminUpdateDiscordId = async (userId, newId) => {
+      if(db) {
+          try {
+            await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userId), { discordId: newId });
+            showToast("Discord ID 已更新", "success");
+            logAction(`管理員操作: 更新了 User ID ${userId} 的 Discord ID`);
+          } catch (e) { showToast(`更新失敗: ${e.message}`, "error"); }
       }
   };
 
@@ -448,6 +556,7 @@ export default function App() {
           }
           await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', userToDelete.id));
           showToast(`${userToDelete.name} 已被完全刪除`, "success");
+          logAction(`管理員操作: 帳號完全刪除 ${userToDelete.name}`);
       } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
 
@@ -456,6 +565,7 @@ export default function App() {
           try {
             await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), { ...webhooks, servers: servers }, { merge: true });
             showToast("Webhook 設定已儲存", "success");
+            logAction(`管理員操作: 系統 Webhook 設定已更新`);
           } catch (e) { showToast(`儲存失敗: ${e.message}`, "error"); }
       }
   };
@@ -467,6 +577,7 @@ export default function App() {
           await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), { servers: updatedServers }, { merge: true });
           setNewServerName('');
           showToast("伺服器已新增", "success");
+          logAction(`管理員操作: 新增伺服器選項 ${newServerName.trim()}`);
       } catch (e) { showToast(`新增伺服器失敗: ${e.message}`, "error"); }
   };
 
@@ -476,6 +587,7 @@ export default function App() {
       try {
           await setDoc(doc(db, 'artifacts', appId, 'public', 'settings'), { servers: updatedServers }, { merge: true });
           showToast("伺服器已移除", "success");
+          logAction(`管理員操作: 移除伺服器選項 ${srvToRemove}`);
       } catch (e) { showToast(`移除伺服器失敗: ${e.message}`, "error"); }
   };
 
@@ -595,8 +707,9 @@ export default function App() {
           <div className="flex gap-2">
             {(currentUser?.id === party.creatorId || currentUser?.role === 'admin') && (
                <>
-                <button onClick={() => handleCompleteParty(party)} className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-full"><CheckCircle size={18} /></button>
-                <button onClick={() => handleDeleteParty(party.id)} className="p-2 text-rose-400 hover:bg-rose-400/10 rounded-full"><Trash2 size={18} /></button>
+                <button onClick={() => handleNotifyParty(party)} className="p-2 text-blue-400 hover:bg-blue-400/10 rounded-full" title="Discord 提醒出團"><Bell size={18} /></button>
+                <button onClick={() => handleCompleteParty(party)} className="p-2 text-emerald-400 hover:bg-emerald-400/10 rounded-full" title="標記完成"><CheckCircle size={18} /></button>
+                <button onClick={() => handleDeleteParty(party.id)} className="p-2 text-rose-400 hover:bg-rose-400/10 rounded-full" title="刪除"><Trash2 size={18} /></button>
                </>
             )}
           </div>
@@ -637,7 +750,6 @@ export default function App() {
                             為 {targetPlayer.name} 選擇出戰角色
                         </h3>
                         <p className="text-xs text-slate-400 mb-4">本週限制 4 場</p>
-                        {/* 修正金框裁切的問題：將 px-2 改成 p-2，並加大了 space-y-3 來保留擴張空間 */}
                         <div className="w-full max-h-60 overflow-y-auto space-y-3 mb-4 p-2 custom-scrollbar">
                             {(!targetPlayer.characters || targetPlayer.characters.length === 0) && (
                                 <div className="text-slate-500 text-center py-4">這位玩家還沒有建立任何角色</div>
@@ -873,14 +985,35 @@ export default function App() {
                 <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm text-slate-400">
                         <thead className="text-xs uppercase bg-slate-800/50 text-slate-300">
-                            <tr><th className="px-4 py-3">名稱</th><th className="px-4 py-3">密碼</th><th className="px-4 py-3">角色數</th><th className="px-4 py-3">操作</th></tr>
+                            <tr>
+                                <th className="px-4 py-3">名稱</th>
+                                <th className="px-4 py-3">密碼</th>
+                                <th className="px-4 py-3">Discord ID</th>
+                                <th className="px-4 py-3">操作</th>
+                            </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-700">
                             {users.map(u => (
                                 <tr key={u.id} className="hover:bg-slate-800/30">
                                     <td className="px-4 py-3 text-white font-medium">{u.name}</td>
                                     <td className="px-4 py-3 font-mono text-violet-300">{u.pin}</td>
-                                    <td className="px-4 py-3">{u.characters?.length || 0}</td>
+                                    {/* Discord ID 編輯區塊 */}
+                                    <td className="px-4 py-3 font-mono text-blue-300">
+                                        <div className="flex items-center gap-2">
+                                            <span className="w-24 truncate" title={u.discordId || '未設定'}>
+                                                {u.discordId || '未設定'}
+                                            </span>
+                                            <button 
+                                                onClick={() => { 
+                                                    const newId = prompt('請輸入此玩家的 Discord 使用者 ID (純數字):', u.discordId || ''); 
+                                                    if(newId !== null) handleAdminUpdateDiscordId(u.id, newId.trim()); 
+                                                }} 
+                                                className="text-xs bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white"
+                                            >
+                                                <Edit2 size={12}/>
+                                            </button>
+                                        </div>
+                                    </td>
                                     <td className="px-4 py-3 flex gap-2">
                                         <button onClick={() => { const newP = prompt(`新密碼:`); if(newP && newP.length === 4) handleAdminResetPin(u.id, newP); }} className="text-xs bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded">重設密碼</button>
                                         <button onClick={() => handleAdminDeleteUser(u)} className="flex items-center gap-1 text-xs bg-rose-900/50 hover:bg-rose-600 text-rose-200 px-2 py-1 rounded transition-colors"><UserMinus size={12}/> 刪除</button>

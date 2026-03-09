@@ -138,6 +138,29 @@ const getCharBorderClass = (job, isMain) => {
     return classes;
 };
 
+// --- [核心新增] 小圓圈場次指示器組件 ---
+const CharCircle = ({ runsLeft, job, isMain, charName }) => {
+    let fillHex = '#f8fafc'; // 預設白色
+    if (isMain) fillHex = '#fbbf24'; // 本尊(金)
+    else if (['cleric', 'chanter'].includes(job)) fillHex = '#fb7185'; // 治癒/護法(紅)
+    else if (job === 'ranger') fillHex = '#34d399'; // 弓星(綠)
+
+    // 依據剩餘場次計算實心比例 (0~4場 -> 0~100%)
+    const percentage = (runsLeft / 4) * 100;
+
+    return (
+        <div 
+            className="w-3.5 h-3.5 rounded-full border shrink-0 opacity-90 hover:opacity-100 transition-opacity" 
+            style={{ 
+                borderColor: fillHex, 
+                // 利用 conic-gradient 繪製類似圓餅圖的進度條
+                background: runsLeft > 0 ? `conic-gradient(${fillHex} ${percentage}%, transparent 0)` : 'transparent' 
+            }}
+            title={`${charName} (剩餘 ${runsLeft} 場)`}
+        />
+    );
+};
+
 /**
  * ------------------------------------------------------------------
  * Main Application Component
@@ -231,13 +254,12 @@ export default function App() {
   };
   const logAction = (msg) => sendDiscordLog(msg);
 
-  // 🔔 [核心新增] Discord 出團提醒 (排版 Embed)
   const handleNotifyParty = async (party) => {
       if (!webhooks.notifyUrl || !webhooks.notifyUrl.startsWith('http')) {
           return showToast("請先在管理員領域設定 Notification Webhook URL", "error");
       }
 
-      let pings = []; // 收集所有要 Tag 的人
+      let pings = []; 
 
       const formatTeam = (team) => {
           if (!team || team.length === 0) return "無";
@@ -246,10 +268,9 @@ export default function App() {
               const u = users.find(user => user.id === slot.userId);
               let mention = slot.userName;
               
-              // 如果有綁定 Discord ID，就轉換成 Tag 格式
               if (u && u.discordId) {
                   mention = `<@${u.discordId}>`;
-                  pings.push(mention); // 加入待 Tag 列表
+                  pings.push(mention); 
               }
               
               const charDisplay = slot.charName 
@@ -262,8 +283,6 @@ export default function App() {
 
       const team1Field = formatTeam(party.team1);
       const team2Field = party.isTwoTeams ? formatTeam(party.team2) : null;
-
-      // 確保 Tag 不重複
       const uniquePings = [...new Set(pings)].join(' ');
 
       const payload = {
@@ -271,11 +290,11 @@ export default function App() {
           embeds: [{
               title: "⚔️ 聖域組隊集結通知",
               description: `隊長 **${party.creatorName}** 發起了出團點名，請各位準備上線囉！`,
-              color: 9062319, // 夢幻紫
+              color: 9062319, 
               fields: [
                   { name: "📅 開團時間", value: formatDate(party.scheduledTime), inline: true },
                   { name: "🔄 預計場次", value: `${party.estimatedRuns} 場`, inline: true },
-                  { name: " ", value: " ", inline: false }, // 空行排版用
+                  { name: " ", value: " ", inline: false }, 
                   { name: "🛡️ 第一小隊", value: team1Field, inline: false }
               ]
           }]
@@ -640,26 +659,29 @@ export default function App() {
                 )}
             </div>
         </div>
-        {(isMe || isCreatorOrAdmin) && (
-          <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
-            {!isReserved && slot.charName && (
-                <button 
-                  onClick={(e) => { 
-                      e.stopPropagation(); 
-                      navigator.clipboard.writeText(slot.charName); 
-                      showToast("已複製角色名稱", "success"); 
-                  }} 
-                  className="text-slate-500 hover:text-emerald-400 p-1"
-                  title="複製角色名稱"
-                >
-                  <Copy size={16} />
-                </button>
-            )}
+        
+        <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
+          {/* [修改] 開放所有人都能看見並點擊複製按鈕 */}
+          {!isReserved && slot.charName && (
+              <button 
+                onClick={(e) => { 
+                    e.stopPropagation(); 
+                    navigator.clipboard.writeText(slot.charName); 
+                    showToast("已複製角色名稱", "success"); 
+                }} 
+                className="text-slate-500 hover:text-emerald-400 p-1"
+                title="複製角色名稱"
+              >
+                <Copy size={16} />
+              </button>
+          )}
+          {/* [維持] 只有本人或管理員可以踢除 */}
+          {(isMe || isCreatorOrAdmin) && (
             <button onClick={onLeave} className="text-slate-500 hover:text-rose-400 p-1" title="踢除/離開">
               <X size={16} />
             </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     );
   };
@@ -691,6 +713,29 @@ export default function App() {
             setAdminStep('selectChar');
         }
     };
+
+    // --- [核心新增] 計算管理員視角的玩家列表與剩餘場次 ---
+    const processedUsers = users.map(u => {
+        const chars = u.characters || [];
+        let totalRunsLeft = 0;
+        
+        const charStats = chars.map(char => {
+            const info = getCharInfo(char);
+            const weeklyRuns = getCharacterWeeklyRuns(info.name, u.id);
+            const runsLeft = Math.max(0, 4 - weeklyRuns);
+            totalRunsLeft += runsLeft;
+            return { ...info, runsLeft };
+        });
+
+        return { ...u, charStats, totalRunsLeft, hasCharacters: chars.length > 0 };
+    }).sort((a, b) => {
+        // 排序邏輯：沒建角色的放最底下，然後是場次打完(totalRunsLeft=0)的往下排
+        if (!a.hasCharacters && b.hasCharacters) return 1;
+        if (a.hasCharacters && !b.hasCharacters) return -1;
+        if (a.totalRunsLeft === 0 && b.totalRunsLeft > 0) return 1;
+        if (a.totalRunsLeft > 0 && b.totalRunsLeft === 0) return -1;
+        return b.totalRunsLeft - a.totalRunsLeft; // 場次多的排越前面
+    });
 
     return (
       <GlassCard className="p-0 animate-slide-up hover:shadow-[0_0_30px_rgba(139,92,246,0.15)] transition-shadow duration-300">
@@ -733,10 +778,21 @@ export default function App() {
                 {currentUser.role === 'admin' && adminStep === 'selectUser' && (
                     <>
                         <h3 className="text-white mb-4 font-bold text-lg">選擇要指派的玩家</h3>
+                        {/* [修改] 使用帶有排序與圓圈指示器的 processedUsers */}
                         <div className="w-full max-h-64 overflow-y-auto space-y-2 mb-4 p-2 custom-scrollbar">
-                            {users.map(u => (
-                                <button key={u.id} onClick={() => { setTargetPlayer(u); setAdminStep('selectChar'); }} className="w-full p-2 bg-slate-800 border border-slate-600 rounded-lg hover:bg-violet-600 text-left text-white font-bold transition-colors">
-                                    {u.name}
+                            {processedUsers.map(u => (
+                                <button 
+                                    key={u.id} 
+                                    onClick={() => { setTargetPlayer(u); setAdminStep('selectChar'); }} 
+                                    className={`w-full p-3 bg-slate-800 border ${u.totalRunsLeft === 0 || !u.hasCharacters ? 'border-slate-700/50 opacity-50 grayscale' : 'border-slate-600'} rounded-lg hover:bg-violet-600 text-left text-white font-bold transition-colors flex justify-between items-center`}
+                                >
+                                    <span className="truncate">{u.name}</span>
+                                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                        {/* 渲染每個角色對應的場次圓圈 */}
+                                        {u.charStats.map((cs, idx) => (
+                                            <CharCircle key={idx} runsLeft={cs.runsLeft} job={cs.job} isMain={cs.isMain} charName={cs.name} />
+                                        ))}
+                                    </div>
                                 </button>
                             ))}
                         </div>
@@ -997,7 +1053,6 @@ export default function App() {
                                 <tr key={u.id} className="hover:bg-slate-800/30">
                                     <td className="px-4 py-3 text-white font-medium">{u.name}</td>
                                     <td className="px-4 py-3 font-mono text-violet-300">{u.pin}</td>
-                                    {/* Discord ID 編輯區塊 */}
                                     <td className="px-4 py-3 font-mono text-blue-300">
                                         <div className="flex items-center gap-2">
                                             <span className="w-24 truncate" title={u.discordId || '未設定'}>

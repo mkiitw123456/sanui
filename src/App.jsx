@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
-  getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken 
+  getAuth, signInAnonymously, onAuthStateChanged 
 } from 'firebase/auth';
 import { 
   getFirestore, collection, doc, addDoc, 
@@ -138,14 +138,13 @@ const getCharBorderClass = (job, isMain) => {
     return classes;
 };
 
-// --- [核心新增] 小圓圈場次指示器組件 ---
+// --- 小圓圈場次指示器組件 ---
 const CharCircle = ({ runsLeft, job, isMain, charName }) => {
-    let fillHex = '#f8fafc'; // 預設白色
-    if (isMain) fillHex = '#fbbf24'; // 本尊(金)
-    else if (['cleric', 'chanter'].includes(job)) fillHex = '#fb7185'; // 治癒/護法(紅)
-    else if (job === 'ranger') fillHex = '#34d399'; // 弓星(綠)
+    let fillHex = '#f8fafc'; 
+    if (isMain) fillHex = '#fbbf24'; 
+    else if (['cleric', 'chanter'].includes(job)) fillHex = '#fb7185'; 
+    else if (job === 'ranger') fillHex = '#34d399'; 
 
-    // 依據剩餘場次計算實心比例 (0~4場 -> 0~100%)
     const percentage = (runsLeft / 4) * 100;
 
     return (
@@ -153,7 +152,6 @@ const CharCircle = ({ runsLeft, job, isMain, charName }) => {
             className="w-3.5 h-3.5 rounded-full border shrink-0 opacity-90 hover:opacity-100 transition-opacity" 
             style={{ 
                 borderColor: fillHex, 
-                // 利用 conic-gradient 繪製類似圓餅圖的進度條
                 background: runsLeft > 0 ? `conic-gradient(${fillHex} ${percentage}%, transparent 0)` : 'transparent' 
             }}
             title={`${charName} (剩餘 ${runsLeft} 場)`}
@@ -171,6 +169,7 @@ export default function App() {
   const [authUser, setAuthUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
+  const [isAutoLoggingIn, setIsAutoLoggingIn] = useState(!!localStorage.getItem('sanctuary_user_id')); // [修正1] 自動登入狀態阻擋
   
   const [webhooks, setWebhooks] = useState({ logUrl: '', notifyUrl: '' });
   const [servers, setServers] = useState([]); 
@@ -183,7 +182,6 @@ export default function App() {
   const [view, setView] = useState('auth'); 
   const [lobbyFilter, setLobbyFilter] = useState('all');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [editingChar, setEditingChar] = useState({ index: null, name: '' });
   
   const [loginForm, setLoginForm] = useState({ name: '', pin: '' });
   const [createPartyForm, setCreatePartyForm] = useState({ time: '', runs: '4', twoTeams: true });
@@ -227,9 +225,12 @@ export default function App() {
     return resetDate.getTime();
   };
 
-  const getCharacterWeeklyRuns = (charName, userId) => {
+  // --- [修正2 & 4] 全新場次計算邏輯 (合併封存、招募中隊伍與手動修改) ---
+  const getCharacterWeeklyRuns = (charName, userId, charObj) => {
     const resetTime = getLastResetTime();
     let runs = 0;
+    
+    // 1. 歷史封存紀錄
     logs.forEach(log => {
       if (log.completedAt >= resetTime) {
         log.participants.forEach(p => {
@@ -237,10 +238,25 @@ export default function App() {
         });
       }
     });
-    return runs;
+
+    // 2. 招募中且卡在上面的隊伍 (即時扣除)
+    parties.filter(p => p.status === 'open').forEach(p => {
+        const allSlots = [...(p.team1 || []), ...(p.team2 || [])];
+        allSlots.forEach(slot => {
+            if (slot && slot.userId === userId && slot.charName === charName) {
+                runs += parseInt(p.estimatedRuns || 1, 10);
+            }
+        });
+    });
+
+    // 3. 玩家手動調整的扣除差額 (手動修改)
+    if (charObj && charObj.manualOffsetDate && charObj.manualOffsetDate >= resetTime) {
+        runs += (charObj.manualOffset || 0);
+    }
+
+    return Math.max(0, runs); // 確保不為負數
   };
 
-  // --- Discord Webhook 邏輯 ---
   const sendDiscordLog = async (msg) => {
     const url = webhooks.logUrl;
     if (!url || !url.startsWith('http')) return;
@@ -258,33 +274,21 @@ export default function App() {
       if (!webhooks.notifyUrl || !webhooks.notifyUrl.startsWith('http')) {
           return showToast("請先在管理員領域設定 Notification Webhook URL", "error");
       }
-
       let pings = []; 
-
       const formatTeam = (team) => {
           if (!team || team.length === 0) return "無";
           return team.map((slot) => {
               if (!slot) return `> \`[空位]\` 等待加入...`;
               const u = users.find(user => user.id === slot.userId);
               let mention = slot.userName;
-              
-              if (u && u.discordId) {
-                  mention = `<@${u.discordId}>`;
-                  pings.push(mention); 
-              }
-              
-              const charDisplay = slot.charName 
-                  ? `**${slot.charName}** (${CLASSES.find(c=>c.id === slot.charJob)?.name || '未知'})` 
-                  : '*保留位 (尚未選角)*';
-              
+              if (u && u.discordId) { mention = `<@${u.discordId}>`; pings.push(mention); }
+              const charDisplay = slot.charName ? `**${slot.charName}** (${CLASSES.find(c=>c.id === slot.charJob)?.name || '未知'})` : '*保留位 (尚未選角)*';
               return `> ${mention} ➔ ${charDisplay}`;
           }).join('\n');
       };
-
       const team1Field = formatTeam(party.team1);
       const team2Field = party.isTwoTeams ? formatTeam(party.team2) : null;
       const uniquePings = [...new Set(pings)].join(' ');
-
       const payload = {
           content: `🔔 **準備出團囉！** ${uniquePings}`,
           embeds: [{
@@ -299,28 +303,17 @@ export default function App() {
               ]
           }]
       };
-
-      if (team2Field) {
-          payload.embeds[0].fields.push({ name: "🛡️ 第二小隊", value: team2Field, inline: false });
-      }
-
+      if (team2Field) payload.embeds[0].fields.push({ name: "🛡️ 第二小隊", value: team2Field, inline: false });
       try {
-          await fetch(webhooks.notifyUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-          });
+          await fetch(webhooks.notifyUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           showToast("已發送 Discord 提醒！", "success");
           logAction(`發送組隊提醒: 隊長 ${party.creatorName} (Party ID: ${party.id})`);
-      } catch (e) {
-          showToast("發送 Discord 失敗，請檢查網址", "error");
-      }
+      } catch (e) { showToast("發送 Discord 失敗，請檢查網址", "error"); }
   };
-
 
   useEffect(() => {
     const initAuth = async () => {
-      if (auth) { try { await signInAnonymously(auth); } catch (e) { showToast(`登入失敗: ${e.message}`, "error"); } } else { setLoading(false); }
+      if (auth) { try { await signInAnonymously(auth); } catch (e) { showToast(`登入失敗: ${e.message}`, "error"); setIsAutoLoggingIn(false); } } else { setLoading(false); setIsAutoLoggingIn(false); }
     };
     initAuth();
     if (auth) {
@@ -336,9 +329,7 @@ export default function App() {
               const data = docSnap.data();
               setWebhooks({ logUrl: data.logUrl || '', notifyUrl: data.notifyUrl || '' });
               setServers(data.servers && Array.isArray(data.servers) ? data.servers : ['艾萊', '伊斯拉']); 
-          } else {
-              setServers(['艾萊', '伊斯拉']);
-          }
+          } else setServers(['艾萊', '伊斯拉']);
       });
       const unsubUsers = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'users'), (snap) => { setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() }))); });
       const unsubParties = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'parties'), (snap) => {
@@ -365,7 +356,13 @@ export default function App() {
             }
             setCurrentUser(foundUser);
             setView('lobby');
+            setIsAutoLoggingIn(false); // 成功登入，關閉阻擋
+        } else {
+            localStorage.removeItem('sanctuary_user_id');
+            setIsAutoLoggingIn(false); // 找不到人，關閉阻擋
         }
+      } else {
+          setIsAutoLoggingIn(false); // 沒ID，關閉阻擋
       }
     }
   }, [users, currentUser]);
@@ -389,10 +386,7 @@ export default function App() {
         setView('lobby');
         showToast(`歡迎回來，${name}`, "success");
         logAction(`使用者登入: ${name}`);
-      } else { 
-          showToast("密碼錯誤", "error"); 
-          logAction(`登入失敗 (密碼錯誤): ${name}`);
-      }
+      } else { showToast("密碼錯誤", "error"); logAction(`登入失敗 (密碼錯誤): ${name}`); }
     } else {
       const newUser = { name, pin, role: ADMIN_USERS.includes(name) ? 'admin' : 'user', characters: [], createdAt: Date.now() };
       try {
@@ -446,9 +440,20 @@ export default function App() {
     } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
   };
 
+  // --- [修正5] 封存時完整保留隊伍結構，而非攤平陣列 ---
   const handleCompleteParty = async (party) => {
     if (!window.confirm("確定標記為已完成嗎？這將會封存紀錄。")) return;
-    const logEntry = { partyId: party.id, completedAt: Date.now(), scheduledTime: party.scheduledTime, runs: party.estimatedRuns, participants: [...(party.team1 || []).filter(s => s?.charName), ...(party.team2 || []).filter(s => s?.charName)] };
+    const logEntry = { 
+        partyId: party.id, 
+        completedAt: Date.now(), 
+        scheduledTime: party.scheduledTime, 
+        runs: party.estimatedRuns, 
+        creatorName: party.creatorName,
+        isTwoTeams: party.isTwoTeams,
+        team1: party.team1,
+        team2: party.team2 || null,
+        participants: [...(party.team1 || []).filter(s => s?.charName), ...(party.team2 || []).filter(s => s?.charName)] 
+    };
     try { 
         await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'logs'), logEntry); 
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'parties', party.id), { status: 'completed' }); 
@@ -533,6 +538,40 @@ export default function App() {
       setCurrentUser({ ...currentUser, characters: updatedChars });
       logAction(`刪除角色: ${currentUser.name} 刪除了 ${charName}`);
     } catch (e) { showToast(`刪除失敗: ${e.message}`, "error"); }
+  };
+
+  // --- [修正4] 手動調整剩餘場次 ---
+  const handleEditManualRuns = async (charData, currentRunsLeft, charObj) => {
+      const newLeftStr = prompt(`【${charData.name}】目前系統計算「剩餘」 ${currentRunsLeft} 場。\n若有透過外團打完，請輸入你想修改的「剩餘場次」(0~4):`, currentRunsLeft);
+      if (newLeftStr === null || newLeftStr.trim() === '') return;
+      
+      const newLeft = parseInt(newLeftStr, 10);
+      if (isNaN(newLeft) || newLeft < 0 || newLeft > 4) {
+          return showToast("請輸入 0 到 4 之間的有效數字", "error");
+      }
+
+      // 轉換成扣打差額並存檔 (系統邏輯用扣除量來算，所以轉換一下)
+      const newTotalSpent = 4 - newLeft; 
+      const currentTotalSpent = 4 - currentRunsLeft;
+      const dynamicSpent = currentTotalSpent - (charObj.manualOffset || 0); // 原本系統算出的真扣打
+      const newOffset = newTotalSpent - dynamicSpent;
+
+      const updatedChars = currentUser.characters.map(c => {
+          const cName = typeof c === 'string' ? c : c.name;
+          if (cName === charData.name) {
+              return { ...c, manualOffset: newOffset, manualOffsetDate: Date.now() };
+          }
+          return c;
+      });
+
+      try {
+          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', currentUser.id), { characters: updatedChars });
+          setCurrentUser({ ...currentUser, characters: updatedChars });
+          showToast(`已成功將 ${charData.name} 剩餘場次修改為 ${newLeft} 場`, "success");
+          logAction(`玩家 ${currentUser.name} 手動修改了 ${charData.name} 的剩餘場次為 ${newLeft} 場`);
+      } catch (e) {
+          showToast(`更新失敗: ${e.message}`, "error");
+      }
   };
 
   // --- 管理員操作 ---
@@ -660,11 +699,12 @@ export default function App() {
             </div>
         </div>
         
-        <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
-          {/* [修改] 開放所有人都能看見並點擊複製按鈕 */}
-          {!isReserved && slot.charName && (
+            <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
+            {!isReserved && slot.charName && (
               <button 
+                type="button"  {/* 加入這行，明確告訴瀏覽器這只是一個普通按鈕 */}
                 onClick={(e) => { 
+                    e.preventDefault();  {/* 加入這行，阻擋畫面跳轉到最上面的預設行為 */}
                     e.stopPropagation(); 
                     navigator.clipboard.writeText(slot.charName); 
                     showToast("已複製角色名稱", "success"); 
@@ -675,9 +715,17 @@ export default function App() {
                 <Copy size={16} />
               </button>
           )}
-          {/* [維持] 只有本人或管理員可以踢除 */}
           {(isMe || isCreatorOrAdmin) && (
-            <button onClick={onLeave} className="text-slate-500 hover:text-rose-400 p-1" title="踢除/離開">
+            <button 
+              type="button"  {/* 踢除按鈕也一併加上，比較保險 */}
+              onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onLeave();
+              }} 
+              className="text-slate-500 hover:text-rose-400 p-1" 
+              title="踢除/離開"
+            >
               <X size={16} />
             </button>
           )}
@@ -714,27 +762,23 @@ export default function App() {
         }
     };
 
-    // --- [核心新增] 計算管理員視角的玩家列表與剩餘場次 ---
     const processedUsers = users.map(u => {
         const chars = u.characters || [];
         let totalRunsLeft = 0;
-        
         const charStats = chars.map(char => {
             const info = getCharInfo(char);
-            const weeklyRuns = getCharacterWeeklyRuns(info.name, u.id);
+            const weeklyRuns = getCharacterWeeklyRuns(info.name, u.id, char);
             const runsLeft = Math.max(0, 4 - weeklyRuns);
             totalRunsLeft += runsLeft;
             return { ...info, runsLeft };
         });
-
         return { ...u, charStats, totalRunsLeft, hasCharacters: chars.length > 0 };
     }).sort((a, b) => {
-        // 排序邏輯：沒建角色的放最底下，然後是場次打完(totalRunsLeft=0)的往下排
         if (!a.hasCharacters && b.hasCharacters) return 1;
         if (a.hasCharacters && !b.hasCharacters) return -1;
         if (a.totalRunsLeft === 0 && b.totalRunsLeft > 0) return 1;
         if (a.totalRunsLeft > 0 && b.totalRunsLeft === 0) return -1;
-        return b.totalRunsLeft - a.totalRunsLeft; // 場次多的排越前面
+        return b.totalRunsLeft - a.totalRunsLeft;
     });
 
     return (
@@ -778,7 +822,6 @@ export default function App() {
                 {currentUser.role === 'admin' && adminStep === 'selectUser' && (
                     <>
                         <h3 className="text-white mb-4 font-bold text-lg">選擇要指派的玩家</h3>
-                        {/* [修改] 使用帶有排序與圓圈指示器的 processedUsers */}
                         <div className="w-full max-h-64 overflow-y-auto space-y-2 mb-4 p-2 custom-scrollbar">
                             {processedUsers.map(u => (
                                 <button 
@@ -788,7 +831,6 @@ export default function App() {
                                 >
                                     <span className="truncate">{u.name}</span>
                                     <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                                        {/* 渲染每個角色對應的場次圓圈 */}
                                         {u.charStats.map((cs, idx) => (
                                             <CharCircle key={idx} runsLeft={cs.runsLeft} job={cs.job} isMain={cs.isMain} charName={cs.name} />
                                         ))}
@@ -812,7 +854,7 @@ export default function App() {
                             )}
                             {targetPlayer.characters?.map((char, idx) => {
                                 const info = getCharInfo(char);
-                                const weeklyRuns = getCharacterWeeklyRuns(info.name, targetPlayer.id);
+                                const weeklyRuns = getCharacterWeeklyRuns(info.name, targetPlayer.id, char);
                                 const requiredRuns = parseInt(party.estimatedRuns);
                                 const isMaxedOut = (weeklyRuns + requiredRuns) > 4;
                                 const borderClass = getCharBorderClass(info.job, info.isMain);
@@ -856,11 +898,20 @@ export default function App() {
       <div className="min-h-screen bg-[#0a0a16] flex items-center justify-center p-4 relative overflow-hidden">
         <GlobalStyles /><div className="absolute top-0 left-0 w-full h-full z-0"><div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-violet-900/20 rounded-full blur-[100px] animate-breathe"></div></div>
         <div className="relative z-10 w-full max-w-md"><div className="text-center mb-8"><h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-violet-200 to-slate-400 mb-2">聖域小號系統</h1></div>
-           <GlassCard className="p-8"><div className="space-y-4">
-                 <input type="text" value={loginForm.name} onChange={(e) => setLoginForm({...loginForm, name: e.target.value})} className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white text-center" placeholder="輸入暱稱" />
-                 <input type="password" maxLength="4" value={loginForm.pin} onChange={(e) => setLoginForm({...loginForm, pin: e.target.value.replace(/\D/g, '')})} className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white text-center tracking-widest text-lg" placeholder="••••" />
-                 <button onClick={handleLogin} className="w-full py-3 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-bold rounded-lg shadow-lg">進入聖域</button>
-              </div></GlassCard>
+           <GlassCard className="p-8">
+              {isAutoLoggingIn ? (
+                  <div className="flex flex-col items-center justify-center py-8">
+                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-violet-500 mb-4"></div>
+                      <p className="text-slate-300 font-bold tracking-widest animate-pulse">連線聖域中...</p>
+                  </div>
+              ) : (
+                  <div className="space-y-4">
+                     <input type="text" value={loginForm.name} onChange={(e) => setLoginForm({...loginForm, name: e.target.value})} className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white text-center" placeholder="輸入暱稱" />
+                     <input type="password" maxLength="4" value={loginForm.pin} onChange={(e) => setLoginForm({...loginForm, pin: e.target.value.replace(/\D/g, '')})} className="w-full bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-white text-center tracking-widest text-lg" placeholder="••••" />
+                     <button onClick={handleLogin} className="w-full py-3 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-bold rounded-lg shadow-lg">進入聖域</button>
+                  </div>
+              )}
+           </GlassCard>
         </div>{toast && <Toast {...toast} onClose={() => setToast(null)} />}
       </div>
     );
@@ -872,6 +923,25 @@ export default function App() {
       const inTeam2 = p.team2 && p.team2.some(s => s && s.userId === currentUser.id);
       return p.creatorId === currentUser.id || inTeam1 || inTeam2;
   });
+
+  // --- [修正3] 計算角色管理的全局統計數據 ---
+  let totalMains = 0, totalAlts = 0, mainsWithRuns = 0, altsWithRuns = 0;
+  if (view === 'profile') {
+      users.forEach(u => {
+          (u.characters || []).forEach(c => {
+              const info = getCharInfo(c);
+              const runsSpent = getCharacterWeeklyRuns(info.name, u.id, c);
+              const runsLeft = Math.max(0, 4 - runsSpent);
+              if (info.isMain) {
+                  totalMains++;
+                  if (runsLeft > 0) mainsWithRuns++;
+              } else {
+                  totalAlts++;
+                  if (runsLeft > 0) altsWithRuns++;
+              }
+          });
+      });
+  }
 
   return (
     <div className="min-h-screen bg-[#0f0f1a] text-slate-200 font-sans pb-20 relative">
@@ -905,6 +975,29 @@ export default function App() {
 
         {view === 'profile' && (
           <div className="animate-fade-in space-y-6">
+             
+             {/* [新增] 統計儀表板 */}
+             <div className="grid grid-cols-2 gap-4">
+                <GlassCard className="p-4 border-amber-500/30">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm text-amber-400 font-bold flex items-center gap-1"><Star size={14}/> 大號 (本尊) 狀態</span>
+                    </div>
+                    <div className="flex items-end gap-2">
+                        <span className="text-3xl font-black text-white">{mainsWithRuns}</span>
+                        <span className="text-sm text-slate-400 mb-1">/ {totalMains} 尚未打完</span>
+                    </div>
+                </GlassCard>
+                <GlassCard className="p-4 border-slate-500/30">
+                    <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm text-slate-400 font-bold flex items-center gap-1"><Users size={14}/> 小號 (分身) 狀態</span>
+                    </div>
+                    <div className="flex items-end gap-2">
+                        <span className="text-3xl font-black text-white">{altsWithRuns}</span>
+                        <span className="text-sm text-slate-400 mb-1">/ {totalAlts} 尚未打完</span>
+                    </div>
+                </GlassCard>
+             </div>
+
              <GlassCard className="p-6">
                 <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2"><Settings className="text-violet-400" /> 我的專屬角色庫</h2>
                 <div className="bg-slate-900/50 p-4 rounded-xl border border-slate-700 mb-6">
@@ -927,13 +1020,26 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                    {currentUser?.characters?.map((char, index) => {
                       const info = getCharInfo(char);
+                      const currentSpent = getCharacterWeeklyRuns(info.name, currentUser.id, char);
+                      const runsLeft = Math.max(0, 4 - currentSpent);
+
                       return (
                           <div key={index} className={`flex justify-between items-center bg-slate-800/40 p-3 rounded-lg ${getCharBorderClass(info.job, info.isMain)}`}>
                              <div className="flex items-center gap-3">
                                  <div className="w-10 h-10 rounded-full bg-slate-900 border border-slate-700 flex justify-center items-center overflow-hidden">{info.icon ? <img src={info.icon} className="w-full h-full object-cover" /> : '?'}</div>
-                                 <div><div className="font-bold text-slate-200 text-sm flex items-center gap-1">{info.name} {info.isMain && <Star size={12} className="text-amber-400 fill-amber-400"/>}</div><div className={`text-xs ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name}</div></div>
+                                 <div>
+                                     <div className="font-bold text-slate-200 text-sm flex items-center gap-1">{info.name} {info.isMain && <Star size={12} className="text-amber-400 fill-amber-400"/>}</div>
+                                     <div className="flex items-center gap-2">
+                                        <div className={`text-xs ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name}</div>
+                                        <span className="text-[10px] bg-slate-900 px-1.5 py-0.5 rounded text-slate-400 border border-slate-700">剩餘 {runsLeft} 場</span>
+                                     </div>
+                                 </div>
                              </div>
-                             <button onClick={() => handleRemoveCharacter(info.name)} className="text-slate-500 hover:text-rose-400 p-2 bg-slate-900 rounded-lg"><Trash2 size={16} /></button>
+                             <div className="flex gap-1">
+                                 {/* [修正] 加入編輯按鈕 */}
+                                 <button onClick={() => handleEditManualRuns(info, runsLeft, char)} className="text-slate-500 hover:text-blue-400 p-2 bg-slate-900 rounded-lg" title="手動調整剩餘場次"><Edit2 size={16} /></button>
+                                 <button onClick={() => handleRemoveCharacter(info.name)} className="text-slate-500 hover:text-rose-400 p-2 bg-slate-900 rounded-lg" title="刪除角色"><Trash2 size={16} /></button>
+                             </div>
                           </div>
                       );
                    })}
@@ -951,13 +1057,19 @@ export default function App() {
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
                                {user.characters.map((char, index) => {
                                   const info = getCharInfo(char);
+                                  const charRuns = getCharacterWeeklyRuns(info.name, user.id, char);
+                                  const rLeft = Math.max(0, 4 - charRuns);
                                   return (
-                                      <div key={index} className={`flex items-center gap-2 bg-slate-800/40 p-2 rounded-lg ${getCharBorderClass(info.job, info.isMain)}`}>
-                                         <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-700 flex justify-center items-center overflow-hidden shrink-0">{info.icon ? <img src={info.icon} className="w-full h-full object-cover" /> : '?'}</div>
-                                         <div className="truncate">
-                                             <div className="font-bold text-slate-200 text-xs truncate flex items-center gap-1">{info.name} {info.isMain && <Star size={10} className="text-amber-400 fill-amber-400"/>}</div>
-                                             <div className={`text-[10px] ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name}</div>
+                                      <div key={index} className={`flex items-center justify-between gap-2 bg-slate-800/40 p-2 rounded-lg ${getCharBorderClass(info.job, info.isMain)}`}>
+                                         <div className="flex items-center gap-2 overflow-hidden w-full">
+                                             <div className="w-8 h-8 rounded-full bg-slate-900 border border-slate-700 flex justify-center items-center overflow-hidden shrink-0">{info.icon ? <img src={info.icon} className="w-full h-full object-cover" /> : '?'}</div>
+                                             <div className="truncate w-full">
+                                                 <div className="font-bold text-slate-200 text-xs truncate flex items-center gap-1">{info.name} {info.isMain && <Star size={10} className="text-amber-400 fill-amber-400"/>}</div>
+                                                 <div className={`text-[10px] ${info.color}`}>{CLASSES.find(c => c.id === info.job)?.name}</div>
+                                             </div>
                                          </div>
+                                         {/* 外服玩家名單也加上圓圈提示 */}
+                                         <CharCircle runsLeft={rLeft} job={info.job} isMain={info.isMain} charName={info.name} />
                                       </div>
                                   );
                                })}
@@ -1079,6 +1191,72 @@ export default function App() {
                     </table>
                 </div>
              </GlassCard>
+
+             {/* [修正5] 通關紀錄：套用新版詳細格式顯示 */}
+             <GlassCard className="p-6">
+                <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
+                    <CheckCircle size={20} className="text-emerald-400" /> 詳細通關紀錄
+                </h3>
+                <div className="space-y-4">
+                    {logs.length === 0 && <p className="text-slate-500">尚無紀錄</p>}
+                    {logs.map((log, i) => (
+                        <div key={i} className="bg-slate-900/40 p-4 rounded-xl border border-slate-700/50">
+                            <div className="flex justify-between mb-3 border-b border-slate-800 pb-2">
+                                <div className="flex items-center gap-3">
+                                    <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle size={14}/> 已完成</span>
+                                    <span className="text-slate-400 text-sm">{formatDate(log.scheduledTime)}</span>
+                                    <span className="text-blue-400 text-sm font-bold">{log.runs} 場</span>
+                                </div>
+                                <span className="text-slate-500 text-xs">隊長: {log.creatorName || '未知'}</span>
+                            </div>
+                            
+                            {/* 如果有新版的 team1/team2 資料，就顯示詳細版 */}
+                            {log.team1 ? (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-1.5">
+                                        <span className="text-xs text-slate-500 font-bold block mb-1 flex items-center gap-1"><Sword size={10}/> 第一小隊</span>
+                                        {log.team1.map((slot, idx) => (
+                                            <div key={idx} className="flex justify-between items-center bg-slate-800/50 px-2 py-1 rounded text-xs border border-slate-700/50">
+                                                {slot ? (
+                                                    <>
+                                                        <span className="text-slate-400 w-16 truncate">{slot.userName}</span>
+                                                        <span className="text-slate-200 font-bold text-right flex-1 truncate">{slot.charName}</span>
+                                                    </>
+                                                ) : <span className="text-slate-600 italic">空位</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {log.isTwoTeams && log.team2 && (
+                                        <div className="space-y-1.5">
+                                            <span className="text-xs text-slate-500 font-bold block mb-1 flex items-center gap-1"><Shield size={10}/> 第二小隊</span>
+                                            {log.team2.map((slot, idx) => (
+                                                <div key={idx} className="flex justify-between items-center bg-slate-800/50 px-2 py-1 rounded text-xs border border-slate-700/50">
+                                                    {slot ? (
+                                                        <>
+                                                            <span className="text-slate-400 w-16 truncate">{slot.userName}</span>
+                                                            <span className="text-slate-200 font-bold text-right flex-1 truncate">{slot.charName}</span>
+                                                        </>
+                                                    ) : <span className="text-slate-600 italic">空位</span>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                // 舊版 log 的回退顯示
+                                <div className="flex flex-wrap gap-1">
+                                    {log.participants.map((p, idx) => (
+                                        <span key={idx} className="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded border border-slate-700">
+                                            {p.userName} ({p.charName})
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+             </GlassCard>
+
           </div>
         )}
       </div>

@@ -699,10 +699,10 @@ export default function App() {
             </div>
         </div>
         
-            <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
-            {!isReserved && slot.charName && (
+        <div className="flex items-center gap-1 shrink-0 ml-1 z-10">
+          {!isReserved && slot.charName && (
               <button 
-                type="button"  {/* 加入這行，明確告訴瀏覽器這只是一個普通按鈕 */}
+                type="button"  
                 onClick={(e) => { 
                     e.preventDefault();  {/* 加入這行，阻擋畫面跳轉到最上面的預設行為 */}
                     e.stopPropagation(); 
@@ -717,7 +717,7 @@ export default function App() {
           )}
           {(isMe || isCreatorOrAdmin) && (
             <button 
-              type="button"  {/* 踢除按鈕也一併加上，比較保險 */}
+              type="button" 
               onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
